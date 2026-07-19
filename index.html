@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Desert Duel</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#2a2320;
+    font-family: system-ui, sans-serif; user-select:none; -webkit-tap-highlight-color:transparent; }
+  #game { display:block; width:100vw; height:100vh; image-rendering:pixelated; cursor:crosshair; }
+  #overlay { position:fixed; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; color:#fff;
+    background:rgba(30,22,18,.82); z-index:10; }
+  #overlay.hidden { display:none; }
+  #overlay h1 { font-size:clamp(32px,7vw,68px); letter-spacing:2px;
+    color:#f4c95d; text-shadow:0 3px 0 #7a4a1e, 0 6px 12px rgba(0,0,0,.5); }
+  #overlay p { margin:14px 0 26px; font-size:clamp(14px,2.4vw,20px); color:#e8dccb; max-width:560px; line-height:1.5; }
+  #overlay .sub { font-size:clamp(12px,1.8vw,15px); color:#b8a690; margin-top:4px; }
+  #overlay button { font-size:clamp(18px,3vw,26px); font-weight:700; color:#fff;
+    background:#c65b3a; border:none; border-bottom:5px solid #8f3b22; border-radius:12px;
+    padding:14px 40px; cursor:pointer; letter-spacing:1px; }
+  #overlay button:active { transform:translateY(3px); border-bottom-width:2px; }
+  .kbd { display:inline-block; background:#3a2f27; border:1px solid #5a4a3c; border-radius:5px;
+    padding:2px 8px; margin:0 2px; font-size:.85em; color:#f4c95d; }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="overlay">
+    <h1>DESERT DUEL</h1>
+    <p>Last mascot standing wins. Grab guns off the sand, dodge the storm, blast the other 7.
+       <br><span class="sub"><span class="kbd">WASD</span> move &nbsp; <span class="kbd">Mouse</span> aim &nbsp;
+       <span class="kbd">Click / Hold</span> shoot &nbsp; walk over a gun to pick it up</span></p>
+    <button id="startBtn">START RUN</button>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>

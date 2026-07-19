@@ -1,0 +1,4 @@
+__pycache__/
+map_backups/
+.DS_Store
+*.pyc

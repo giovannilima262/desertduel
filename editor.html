@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Desert Duel — Map Editor</title>
+<style>
+  :root{ --bg:#2a2320; --panel:#332b26; --panel2:#3d332c; --line:#4d4038; --txt:#efe6d8;
+         --accent:#c65b3a; --accent2:#f4c95d; --muted:#a08a76; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{ font-family:system-ui,sans-serif; background:var(--bg); color:var(--txt);
+        display:flex; flex-direction:column; overflow:hidden; user-select:none; }
+  header{ display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel);
+          border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1{ font-size:16px; color:var(--accent2); letter-spacing:1px; margin-right:6px; }
+  .group{ display:flex; align-items:center; gap:4px; padding:0 8px; border-left:1px solid var(--line); }
+  .group:first-of-type{ border-left:none; }
+  .lbl{ font-size:11px; color:var(--muted); margin-right:2px; }
+  button, select{ font-family:inherit; font-size:12px; color:var(--txt); background:var(--panel2);
+          border:1px solid var(--line); border-radius:6px; padding:5px 9px; cursor:pointer; }
+  button:hover{ background:#4a3e35; }
+  button.on{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.coll{ min-width:34px; }
+  main{ flex:1; display:flex; min-height:0; }
+  #palettePanel{ width:230px; background:var(--panel); border-right:1px solid var(--line);
+          display:flex; flex-direction:column; }
+  #palTop{ padding:8px; border-bottom:1px solid var(--line); }
+  #palTop select{ width:100%; }
+  #selInfo{ font-size:11px; color:var(--muted); margin-top:6px; display:flex; align-items:center; gap:8px; }
+  #selCanvasWrap{ width:48px; height:48px; background:
+        conic-gradient(#5a4d43 0 25%, #4a3e35 0 50%, #5a4d43 0 75%, #4a3e35 0) 0 0/16px 16px; border:1px solid var(--line); }
+  #layersPanel{ border-bottom:1px solid var(--line); padding:8px; background:#2e2721; }
+  .lp-head{ display:flex; align-items:center; justify-content:space-between; font-size:11px;
+            color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; }
+  .lp-head button{ padding:1px 8px; font-size:14px; line-height:1; }
+  #layerList{ display:flex; flex-direction:column; gap:3px; max-height:180px; overflow:auto; }
+  .lrow{ display:flex; align-items:center; gap:2px; padding:3px 4px; border-radius:5px;
+         background:var(--panel2); border:1px solid transparent; cursor:pointer; }
+  .lrow:hover{ background:#4a3e35; }
+  .lrow.sel{ border-color:var(--accent2); background:#4a3e35; }
+  .lrow .lname{ flex:1; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lrow button{ padding:1px 4px; font-size:10px; background:transparent; border:none; opacity:.65; }
+  .lrow button:hover{ opacity:1; background:#5a4d43; }
+  .lrow .eye{ width:20px; }
+  .lp-op{ display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .lp-op input[type=range]{ flex:1; min-width:0; }
+  .lp-op #layerAlphaVal{ font-size:11px; color:var(--muted); width:34px; text-align:right; }
+  #collLayerBtn{ width:100%; margin-top:6px; }
+  #paletteScroll{ flex:1; overflow:auto; padding:8px; }
+  #paletteCanvas{ image-rendering:pixelated; cursor:crosshair; display:block; }
+  #stage{ flex:1; overflow:auto; background:#211b18; position:relative; }
+  #stage.dragover{ outline:4px dashed var(--accent2); outline-offset:-8px; }
+  #stage.dragover::after{ content:'Solte a imagem para usar de referência'; position:sticky; top:40%; left:0;
+    display:block; text-align:center; color:var(--accent2); font-size:18px; font-weight:600; pointer-events:none; }
+  #mapCanvas{ image-rendering:pixelated; cursor:crosshair; display:block; }
+  #status{ position:fixed; bottom:0; left:230px; right:0; padding:4px 10px; font-size:11px;
+           color:var(--muted); background:rgba(30,24,20,.85); border-top:1px solid var(--line);
+           display:flex; gap:16px; }
+  .sep{ flex:1; }
+  .swatch{ width:12px; height:12px; border-radius:3px; display:inline-block; vertical-align:-2px; margin-right:3px; }
+  input[type=number]{ width:52px; font-family:inherit; background:var(--panel2); color:var(--txt);
+           border:1px solid var(--line); border-radius:5px; padding:4px; }
+  dialog{ background:var(--panel); color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:16px; max-width:90vw; }
+  dialog textarea{ width:560px; max-width:82vw; height:260px; background:#221c18; color:#cfe6b0;
+           border:1px solid var(--line); border-radius:6px; font-family:ui-monospace,monospace; font-size:11px; padding:8px; }
+  dialog .row{ display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
+  kbd{ background:#241d19; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗺️ DESERT DUEL — MAP EDITOR</h1>
+  <div class="group" id="toolGroup">
+    <span class="lbl">Ferramenta</span>
+    <button id="Tpaint" class="on" data-tool="paint">✏️ Pincel</button>
+    <button id="Terase" data-tool="erase">🧽 Apagar</button>
+    <button id="Tfill" data-tool="fill">🪣 Balde</button>
+    <button id="Tpick" data-tool="pick">💧 Conta-gotas</button>
+    <button id="Tselect" data-tool="select">▭ Seleção</button>
+  </div>
+  <div class="group" id="clipGroup">
+    <span class="lbl">Área</span>
+    <button id="copyBtn" disabled title="Copiar seleção (todas as camadas) — Ctrl+C">⧉ Copiar</button>
+    <button id="pasteBtn" disabled title="Colar — Ctrl+V (clique carimba, Esc sai)">📋 Colar</button>
+    <button id="rotBtn" disabled title="Girar 90° — R">⟳ Girar</button>
+    <button id="flipHBtn" disabled title="Espelhar ↔ — H">⇋ H</button>
+    <button id="flipVBtn" disabled title="Espelhar ↕ — V">⇅ V</button>
+    <button id="delBtn" disabled title="Apagar a seleção na camada ativa — Del">🗑 Apagar</button>
+    <button id="delAllBtn" disabled title="Apagar a seleção em TODAS as camadas (inclui o Chão) — Shift+Del">🗑 Tudo</button>
+    <span class="lbl" id="clipInfo">—</span>
+  </div>
+  <div class="group" id="collGroup" style="display:none">
+    <span class="lbl">Colisão</span>
+    <button id="ckPiso"   class="ck on" data-kind="piso">▦ Piso</button>
+    <button id="ckEscada" class="ck" data-kind="escada">▤ Escada</button>
+    <button id="ckBlock"  class="ck" data-kind="block">✕ Bloqueio</button>
+    <button id="ckSpawn"  class="ck" data-kind="spawn">◎ Spawn</button>
+    <button id="ckPonte"  class="ck" data-kind="ponte" title="Ligada a um nível: o player daquele andar passa POR TRÁS do mapa aqui. Só funciona no nível escolhido. Não altera os andares.">◫ Ponte</button>
+    <button id="ckMato"   class="ck" data-kind="mato" title="Vegetação decorativa — renderiza na frente com animação de vento">🌿 Mato</button>
+    <span class="lbl" id="lvlLbl">Nível</span>
+    <button id="lvlDn">−</button><span id="lvlVal" style="min-width:14px;text-align:center">0</span><button id="lvlUp">+</button>
+    <span id="stairCtl" style="display:none">
+      <span class="lbl">Liga</span>
+      <button id="saDn">−</button><span id="saVal" style="min-width:12px;text-align:center">0</span><button id="saUp">+</button>
+      <span class="lbl">↕</span>
+      <button id="sbDn">−</button><span id="sbVal" style="min-width:12px;text-align:center">2</span><button id="sbUp">+</button>
+    </span>
+    <button id="testBtn" title="Andar pelo mapa com o boneco — Esc sai">▶ Testar</button>
+  </div>
+  <div class="group">
+    <span class="lbl">Zoom</span>
+    <button id="zoomOut">−</button><button id="zoomIn">+</button>
+    <button id="gridToggle" class="on">Grade</button>
+    <button id="collView" class="on">Ver colisão</button>
+  </div>
+  <div class="group">
+    <span class="lbl">Tamanho</span>
+    <input type="number" id="mCols" value="60" min="8" max="200">×
+    <input type="number" id="mRows" value="46" min="8" max="200">
+    <button id="resizeBtn">Aplicar</button>
+  </div>
+  <div class="group" id="refGroup" style="display:none">
+    <span class="lbl">🖼 Imagem — arraste no mapa p/ mover</span>
+    <span class="lbl">Escala</span>
+    <input type="number" id="refScale" value="100" min="0.1" max="2000" step="0.1" title="Escala em % — setas ↑↓ ajustam de 0,1 em 0,1">
+    <span class="lbl">%</span>
+    <span class="lbl">Larg</span>
+    <input type="number" id="refCells" value="60" min="0.1" max="400" step="0.05" title="Largura em células da grade — setas ↑↓ ajustam de 0,05 em 0,05">
+    <span class="lbl">céls</span>
+  </div>
+  <div class="group">
+    <button id="undoBtn" disabled title="Desfazer">↶</button>
+    <button id="redoBtn" disabled title="Refazer">↷</button>
+  </div>
+  <div class="group">
+    <button id="saveBtn">💾 Salvar</button>
+    <button id="exportBtn" class="on">⬇️ Exportar</button>
+    <button id="importBtn">Importar</button>
+    <button id="clearBtn">🗑️ Limpar</button>
+  </div>
+</header>
+<main>
+  <aside id="palettePanel">
+    <div id="palTop">
+      <select id="sheetSel"></select>
+      <div id="selInfo"><div id="selCanvasWrap"><canvas id="selCanvas" width="48" height="48"></canvas></div><span id="selText">—</span></div>
+    </div>
+    <div id="layersPanel">
+      <div class="lp-head"><span>Camadas</span>
+        <button id="addLayer" title="Nova camada">＋</button>
+      </div>
+      <div id="layerList"></div>
+      <div class="lp-op">
+        <span class="lbl">Opacidade</span>
+        <input type="range" id="layerAlpha" min="0" max="100" value="100" title="Opacidade da camada selecionada">
+        <span id="layerAlphaVal">100%</span>
+      </div>
+      <button id="collLayerBtn" title="Pintar áreas de regra">▦ Colisão</button>
+    </div>
+    <div id="paletteScroll"><canvas id="paletteCanvas"></canvas></div>
+  </aside>
+  <div id="stage"><canvas id="mapCanvas"></canvas></div>
+</main>
+<div id="status">
+  <span id="stCell">célula: —</span>
+  <span id="stLayer">camada: base</span>
+  <span id="stFile">não salvo em arquivo</span>
+  <span class="sep"></span>
+  <span><kbd>Ctrl+Z</kbd> desfaz · <kbd>Ctrl+Shift+Z</kbd> refaz · <kbd>Ctrl+S</kbd> grava map.json · <kbd>Alt</kbd>+clique = conta-gotas · <kbd>1</kbd>–<kbd>9</kbd> camada · <kbd>N</kbd> nova · <kbd>C</kbd> colisão · <b>arraste uma imagem = referência</b></span>
+</div>
+
+<dialog id="ioDlg">
+  <div style="margin-bottom:8px;font-weight:600" id="ioTitle">Exportar mapa</div>
+  <textarea id="ioText" spellcheck="false"></textarea>
+  <div class="row">
+    <button id="ioCopy">Copiar</button>
+    <button id="ioDownload">Baixar map.json</button>
+    <button id="ioLoad" style="display:none">Carregar</button>
+    <button id="ioClose">Fechar</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+/* Desert Duel — Map Editor (inlined so it runs in every browser, no external fetch/eval). */
+
+// Each Kenney sheet has its OWN tile size: the terrain/interface sheets are 16px,
+// the character/weapon sheets are 24px.
+const SHEETS = {
+  tiles:   { src:'assets/img/tiles_packed.png',     cols:18, rows:13, tile:16, label:'Tiles (terreno, props, cercas, portas)' },
+  interface:{src:'assets/img/interface_packed.png', cols:18, rows:11, tile:16, label:'Interface (ícones, letras, botões)' },
+  enemies: { src:'assets/img/enemies_packed.png',   cols:4,  rows:4,  tile:24, label:'Enemies' },
+  players: { src:'assets/img/players_packed.png',   cols:4,  rows:4,  tile:24, label:'Players' },
+  weapons: { src:'assets/img/weapons_packed.png',   cols:10, rows:4,  tile:24, label:'Weapons' },
+};
+const TS = sh => SHEETS[sh].tile;   // source tile size for a given sheet
+// ---- floor-aware collision -------------------------------------------------
+// value encoding in coll[]: 0 vazio · 1 bloqueio · 2 spawn · 10+L piso nível L · 20+L escada (liga L e L+1)
+const N_FLOORS = 6;                                   // levels 0..5
+const FLOOR_RGB = [[95,205,120],[80,195,160],[70,180,195],[95,155,215],[150,135,225],[210,130,200]];
+function floorColor(L,a=0.5){ const c=FLOOR_RGB[Math.min(L,FLOOR_RGB.length-1)]; return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+function collInfo(v){
+  if(!v) return null;
+  if(v===1) return {kind:'block', color:'rgba(228,80,70,0.60)', label:'✕'};
+  if(v===2) return {kind:'spawn', levels:[0], color:'rgba(244,201,93,0.62)', label:'S'};
+  if(v>=10 && v<20){ const L=v-10; return {kind:'piso', level:L, levels:[L], color:floorColor(L), label:''+L}; }
+  if(v>=20 && v<30){ const s=v-20; return {kind:'escada', levels:[s,s+1], color:'rgba(85,150,255,0.60)', label:s+'↕'+(s+1)}; }  // legado (adjacente)
+  if(v>=100 && v<200){ const lo=((v-100)/10|0), hi=(v-100)%10;               // escada que liga dois níveis quaisquer
+    return {kind:'escada', levels: lo===hi?[lo]:[lo,hi], color:'rgba(85,150,255,0.60)', label:lo+'↕'+hi}; }
+  return null;
+}
+function collValue(){
+  if(collKind==='block') return 1;
+  if(collKind==='spawn') return 2;
+  if(collKind==='mato')  return 0;   // mato is independent — never stored in coll[]
+  if(collKind==='piso')  return 10+collLevel;
+  if(collKind==='escada'){ const lo=Math.min(collStairLo,collStairHi), hi=Math.max(collStairLo,collStairHi); return 100+lo*10+hi; }
+  return 0;
+}
+
+const IMG = {};
+const $ = id => document.getElementById(id);
+
+let cols = 60, rows = 46;
+let layers = [], active = 0, coll = [];   // layers[]: {name, visible, tiles[]} — drawn bottom→top
+let over = [];                            // occlusion/ponte flag, PARALLEL to coll (doesn't replace it)
+let mato = [];                            // decorative bush/grass flag, PARALLEL to coll (independent)
+let mode = 'tiles';                       // 'tiles' (paint layers[active]) | 'coll'
+let tool = 'paint';
+let sheet = 'tiles';
+let sel = { sh:'tiles', c:0, r:0 };
+let collKind = 'piso', collLevel = 0;              // selected collision brush
+let collStairLo = 0, collStairHi = 2;             // stair connects these two (arbitrary) levels
+let cell = 22;
+let showGrid = true, showColl = true;
+let hover = null;
+let painting = false, eraseDrag = false;
+let refDrag = null;   // in-progress drag of the active image layer
+let testMode = false, hero = null, testRAF = null, testKeys = {};   // walk-test the collision
+// ---- selection / clipboard (copy a whole structure across every layer) ----
+let selRect = null;      // {c0,r0,c1,r1} normalised
+let selDrag = null;      // marquee being dragged
+let clip = null;         // {w,h,layers:{name:[tile|null]}, coll:[int], over:[int], mato:[int]}
+let pasteMode = false;   // ghost follows the cursor; click stamps
+
+function idx(c,r){ return r*cols+c; }
+function inb(c,r){ return c>=0 && r>=0 && c<cols && r<rows; }
+function mkLayer(name){ return { type:'tiles', name, visible:true, locked:false, alpha:1, tiles:new Array(cols*rows).fill(null) }; }
+function mkImageLayer(name, img, src){
+  return { type:'image', name, visible:true, locked:false, img, src, gx:0, gy:0, cellsW:cols, baseW:cols, alpha:0.5 };
+}
+const isLocked = () => !!(layers[active] && layers[active].locked);
+
+// ---------- undo / redo ----------
+// Snapshots copy the tile arrays but SHARE the decoded Image + its dataURL, so a step
+// costs a few arrays instead of megabytes.
+const HIST_MAX = 60;
+let undoStack = [], redoStack = [], histTag = null, histT = 0;
+function cloneLayer(L){
+  return L.type==='image'
+    ? { ...L }                                    // img/src shared on purpose
+    : { ...L, tiles:L.tiles.slice() };
+}
+function snapshot(){
+  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice() };
+}
+function restore(s){
+  cols=s.cols; rows=s.rows; active=Math.min(s.active, s.layers.length-1);
+  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice();
+  $('mCols').value=cols; $('mRows').value=rows;
+  setLayer(); renderMap(); save();
+}
+// tag+window coalesce rapid same-kind edits (a slider drag = one undo step, not 60)
+function pushHistory(tag){
+  const now = Date.now();
+  if(tag && tag===histTag && now-histT < 700){ histT = now; return; }
+  histTag = tag || null; histT = now;
+  undoStack.push(snapshot());
+  if(undoStack.length > HIST_MAX) undoStack.shift();
+  redoStack.length = 0;
+  updateHistBtns();
+}
+function undo(){ if(!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); histTag=null; updateHistBtns(); }
+function redo(){ if(!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); histTag=null; updateHistBtns(); }
+function updateHistBtns(){
+  $('undoBtn').disabled = !undoStack.length;
+  $('redoBtn').disabled = !redoStack.length;
+  $('undoBtn').title = 'Desfazer ('+undoStack.length+')';
+  $('redoBtn').title = 'Refazer ('+redoStack.length+')';
+}
+function blankLayers(){
+  layers = [ mkLayer('Base'), mkLayer('Objetos') ];
+  active = 0;
+  coll = new Array(cols*rows).fill(0);
+  over = new Array(cols*rows).fill(0);
+  mato = new Array(cols*rows).fill(0);
+}
+function overAt(c,r){ return (c<0||r<0||c>=cols||r>=rows) ? 0 : over[r*cols+c]; }
+const isImg     = L => !!L && L.type==='image';
+const activeImg = () => (mode==='tiles' && isImg(layers[active])) ? layers[active] : null;
+const curTiles  = () => layers[active].tiles;   // only meaningful on a tile layer
+
+const palCanvas = $('paletteCanvas'), palCtx = palCanvas.getContext('2d');
+const PAL_SCALE = 3;
+function drawPalette(){
+  const s = SHEETS[sheet]; const img = IMG[sheet]; const TL = s.tile;
+  const cs = TL*PAL_SCALE;                       // displayed cell size in the palette
+  const w = s.cols*cs, h = s.rows*cs;
+  palCanvas.width = w; palCanvas.height = h;
+  palCtx.imageSmoothingEnabled = false;
+  palCtx.fillStyle='#4a3e35'; palCtx.fillRect(0,0,w,h);
+  palCtx.fillStyle='#564a40';
+  for(let y=0;y<h;y+=16) for(let x=0;x<w;x+=16){ if(((x/16+y/16)&1)) palCtx.fillRect(x,y,16,16); }
+  for(let r=0;r<s.rows;r++) for(let c=0;c<s.cols;c++){
+    palCtx.drawImage(img, c*TL,r*TL,TL,TL, c*cs,r*cs,cs,cs);
+  }
+  palCtx.strokeStyle='rgba(0,0,0,0.25)'; palCtx.lineWidth=1;
+  for(let c=0;c<=s.cols;c++){ palCtx.beginPath(); palCtx.moveTo(c*cs+.5,0); palCtx.lineTo(c*cs+.5,h); palCtx.stroke(); }
+  for(let r=0;r<=s.rows;r++){ palCtx.beginPath(); palCtx.moveTo(0,r*cs+.5); palCtx.lineTo(w,r*cs+.5); palCtx.stroke(); }
+  if(sel.sh===sheet){
+    palCtx.strokeStyle='#f4c95d'; palCtx.lineWidth=3;
+    palCtx.strokeRect(sel.c*cs+1.5, sel.r*cs+1.5, cs-3, cs-3);
+  }
+}
+palCanvas.addEventListener('mousedown', e=>{
+  const rect = palCanvas.getBoundingClientRect();
+  const s = SHEETS[sheet]; const cs = s.tile*PAL_SCALE;
+  const c = ((e.clientX-rect.left)/cs)|0, r = ((e.clientY-rect.top)/cs)|0;
+  if(c<0||r<0||c>=s.cols||r>=s.rows) return;
+  sel = { sh:sheet, c, r }; drawPalette(); drawSel(); updateSelText();
+  if(mode==='coll'){ mode='tiles'; setLayer(); }   // picking a tile implies a tile layer
+});
+
+const selCanvas = $('selCanvas'), selCtx = selCanvas.getContext('2d');
+function drawSel(){
+  selCtx.clearRect(0,0,48,48); selCtx.imageSmoothingEnabled=false;
+  const TL=TS(sel.sh); selCtx.drawImage(IMG[sel.sh], sel.c*TL,sel.r*TL,TL,TL, 0,0,48,48);
+}
+function updateSelText(){ $('selText').textContent = `${sel.sh} (${sel.c},${sel.r})`; }
+
+const mapCanvas = $('mapCanvas'), mapCtx = mapCanvas.getContext('2d');
+function drawTileTo(ctx, tref, x, y, size){
+  if(!tref) return; const img = IMG[tref.sh]; if(!img) return;
+  const TL = TS(tref.sh); ctx.drawImage(img, tref.c*TL, tref.r*TL, TL, TL, x, y, size, size);
+}
+function drawImageLayer(L){
+  if(!L.img || !L.img.complete || !L.img.naturalWidth) return;
+  const w = L.cellsW*cell, h = w*(L.img.naturalHeight/L.img.naturalWidth);
+  mapCtx.save(); mapCtx.globalAlpha = L.alpha; mapCtx.imageSmoothingEnabled = true;
+  mapCtx.drawImage(L.img, L.gx*cell, L.gy*cell, w, h);
+  mapCtx.restore(); mapCtx.imageSmoothingEnabled = false;
+}
+function renderMap(){
+  mapCanvas.width = cols*cell; mapCanvas.height = rows*cell;
+  mapCtx.imageSmoothingEnabled = false;
+  mapCtx.fillStyle = '#c99a63'; mapCtx.fillRect(0,0,mapCanvas.width,mapCanvas.height);
+  // only redraw the visible window (the map can be 120×120 × many layers)
+  const sc=$('stage');
+  const vc0=Math.max(0,(sc.scrollLeft/cell|0)-1), vr0=Math.max(0,(sc.scrollTop/cell|0)-1);
+  const vc1=Math.min(cols,vc0+(sc.clientWidth/cell|0)+3), vr1=Math.min(rows,vr0+(sc.clientHeight/cell|0)+3);
+  for(const L of layers){                     // bottom → top; layer order decides what covers what
+    if(!L.visible) continue;
+    if(L.type==='image'){ drawImageLayer(L); continue; }
+    mapCtx.save(); mapCtx.globalAlpha = (typeof L.alpha==='number') ? L.alpha : 1;
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++) drawTileTo(mapCtx, L.tiles[idx(c,r)], c*cell, r*cell, cell);
+    mapCtx.restore();
+  }
+  if(showColl || testMode){
+    const lblOn = cell>=16;
+    mapCtx.textAlign='center'; mapCtx.textBaseline='middle'; mapCtx.font=Math.round(cell*0.5)+'px system-ui';
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){
+      const info = collInfo(coll[idx(c,r)]); if(!info) continue;
+      // in test mode, fade floors that aren't reachable from the hero's current level
+      let a=1;
+      if(testMode && hero && info.levels){ a = info.levels.includes(hero.L) ? 1 : 0.2; }
+      mapCtx.globalAlpha=a; mapCtx.fillStyle=info.color; mapCtx.fillRect(c*cell,r*cell,cell,cell);
+      if(lblOn && info.label){ mapCtx.globalAlpha=Math.min(1,a+0.3); mapCtx.fillStyle='rgba(20,15,25,0.8)';
+        mapCtx.fillText(info.label, c*cell+cell/2, r*cell+cell/2); }
+      mapCtx.globalAlpha=1;
+    }
+    // mato (decorative bush): green overlay, independent of coll[]
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ if(!mato[idx(c,r)]) continue;
+      mapCtx.globalAlpha=0.5; mapCtx.fillStyle='rgba(100,210,80,0.45)'; mapCtx.fillRect(c*cell,r*cell,cell,cell);
+      if(lblOn){ mapCtx.globalAlpha=0.8; mapCtx.fillStyle='rgba(20,15,25,0.8)';
+        mapCtx.fillText('🌿', c*cell+cell/2, r*cell+cell/2); }
+      mapCtx.globalAlpha=1;
+    }
+    // ponte (occlusion): diagonal hatching coloured by the level it's bound to; drawn over the coll colour so both show
+    mapCtx.lineWidth=Math.max(1,cell*0.07);
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ const ov=over[idx(c,r)]; if(!ov) continue;
+      const pl=ov-1;                                             // the level this ponte serves
+      let a=0.8; if(testMode && hero) a = (pl===hero.L) ? 0.95 : 0.18;   // in test, dim ponte not for the current level
+      const x=c*cell, y=r*cell;
+      mapCtx.save(); mapCtx.globalAlpha=a; mapCtx.beginPath(); mapCtx.rect(x,y,cell,cell); mapCtx.clip();
+      mapCtx.strokeStyle=floorColor(pl,1);
+      mapCtx.beginPath(); for(let k=-cell;k<cell;k+=Math.max(4,cell*0.3)){ mapCtx.moveTo(x+k,y+cell); mapCtx.lineTo(x+k+cell,y); }
+      mapCtx.stroke(); mapCtx.restore();
+      if(cell>=16){ mapCtx.save(); mapCtx.globalAlpha=Math.min(1,a+0.2); mapCtx.fillStyle='rgba(20,15,25,0.9)';
+        mapCtx.font='bold '+Math.round(cell*0.34)+'px system-ui'; mapCtx.textAlign='right'; mapCtx.textBaseline='top';
+        mapCtx.fillText('◫'+pl, x+cell-2, y+2); mapCtx.restore(); }
+    }
+  }
+  if(showGrid){
+    mapCtx.strokeStyle='rgba(0,0,0,0.18)'; mapCtx.lineWidth=1;
+    for(let c=0;c<=cols;c++){ mapCtx.beginPath(); mapCtx.moveTo(c*cell+.5,0); mapCtx.lineTo(c*cell+.5,rows*cell); mapCtx.stroke(); }
+    for(let r=0;r<=rows;r++){ mapCtx.beginPath(); mapCtx.moveTo(0,r*cell+.5); mapCtx.lineTo(cols*cell,r*cell+.5); mapCtx.stroke(); }
+  }
+  // clipboard ghost: preview of what a click would stamp
+  if(pasteMode && clip && hover){
+    mapCtx.save(); mapCtx.globalAlpha=0.65;
+    for(const [name,buf] of Object.entries(clip.layers)){
+      for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){
+        const t=buf[y*clip.w+x]; if(!t) continue;
+        drawTileTo(mapCtx, t, (hover.c+x)*cell, (hover.r+y)*cell, cell);
+      }
+    }
+    mapCtx.restore();
+    mapCtx.strokeStyle='#5fd35f'; mapCtx.lineWidth=2;
+    mapCtx.strokeRect(hover.c*cell, hover.r*cell, clip.w*cell, clip.h*cell);
+  } else if(hover){
+    mapCtx.strokeStyle='#f4c95d'; mapCtx.lineWidth=2;
+    mapCtx.strokeRect(hover.c*cell+1, hover.r*cell+1, cell-2, cell-2);
+  }
+  // selection marquee
+  if(selRect){
+    const x=selRect.c0*cell, y=selRect.r0*cell;
+    const w=(selRect.c1-selRect.c0+1)*cell, h=(selRect.r1-selRect.r0+1)*cell;
+    mapCtx.save();
+    mapCtx.fillStyle='rgba(244,201,93,0.12)'; mapCtx.fillRect(x,y,w,h);
+    mapCtx.strokeStyle='#f4c95d'; mapCtx.lineWidth=2; mapCtx.setLineDash([6,4]);
+    mapCtx.strokeRect(x+1,y+1,w-2,h-2);
+    mapCtx.restore();
+  }
+  // test-mode hero
+  if(testMode && hero){
+    const R=cell*0.34;
+    mapCtx.fillStyle='rgba(0,0,0,0.3)'; mapCtx.beginPath(); mapCtx.ellipse(hero.x,hero.y+R*0.7,R,R*0.5,0,0,6.28); mapCtx.fill();
+    mapCtx.fillStyle='#ffffff'; mapCtx.strokeStyle='#2a2320'; mapCtx.lineWidth=2;
+    mapCtx.beginPath(); mapCtx.arc(hero.x,hero.y,R,0,6.28); mapCtx.fill(); mapCtx.stroke();
+    mapCtx.fillStyle=floorColor(hero.L,1); mapCtx.beginPath(); mapCtx.arc(hero.x,hero.y,R*0.55,0,6.28); mapCtx.fill();
+    // occlusion: on 'ponte' cells bound to the hero's level, only the FRONTMOST sprite
+    // (the topmost visible tile at that cell) redraws in front — ground/lower sprites stay behind the player
+    window.__occDbg={heroL:hero.L, vc0,vc1,vr0,vr1, matched:0, drawn:0};
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ const i=idx(c,r);
+      if(!bridgeActive(over[i],hero.L)) continue;
+      window.__occDbg.matched++;
+      for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
+        if(!L.visible || L.type==='image' || !L.tiles[i]) continue;
+        mapCtx.save(); mapCtx.globalAlpha=(typeof L.alpha==='number')?L.alpha:1;
+        drawTileTo(mapCtx, L.tiles[i], c*cell, r*cell, cell);
+        mapCtx.restore();
+        window.__occDbg.drawn++;
+        break;                                    // só o sprite mais à frente cobre o player
+      }
+    }
+  }
+}
+
+function cellFromEvent(e){
+  const rect = mapCanvas.getBoundingClientRect();
+  const c = ((e.clientX-rect.left)/cell)|0, r = ((e.clientY-rect.top)/cell)|0;
+  if(c<0||r<0||c>=cols||r>=rows) return null;
+  return {c,r};
+}
+function applyAt(c,r,erase){
+  const i = idx(c,r);
+  if(mode==='coll'){
+    if(collKind==='ponte') over[i] = erase ? 0 : (collLevel+1);   // ponte bound to a level (stored as level+1); leaves coll[] intact
+    else if(collKind==='mato') mato[i] = erase ? 0 : 1;            // mato is independent — doesn't touch coll[]
+    else coll[i] = erase ? 0 : collValue();
+    return;
+  }
+  if(isLocked() || isImg(layers[active])) return;   // locked, or an image layer (holds no tiles)
+  const arr = curTiles();
+  if(erase || tool==='erase') arr[i]=null;
+  else arr[i] = { sh:sel.sh, c:sel.c, r:sel.r };
+}
+function floodFill(c,r){
+  const i=idx(c,r);
+  if(mode==='coll'){
+    let arr, repl;
+    if(collKind==='ponte'){ arr=over; repl=collLevel+1; }
+    else if(collKind==='mato'){ arr=mato; repl=1; }
+    else { arr=coll; repl=collValue(); }
+    const target=arr[i]; if(target===repl) return;
+    const st=[[c,r]]; while(st.length){ const [x,y]=st.pop(); if(x<0||y<0||x>=cols||y>=rows) continue;
+      if(arr[idx(x,y)]!==target) continue; arr[idx(x,y)]=repl; st.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]); }
+  } else {
+    if(isLocked() || isImg(layers[active])) return;
+    const arr=curTiles(); const key=v=>v?`${v.sh},${v.c},${v.r}`:'';
+    const target=key(arr[i]); const repl=`${sel.sh},${sel.c},${sel.r}`; if(target===repl) return;
+    const st=[[c,r]]; while(st.length){ const [x,y]=st.pop(); if(x<0||y<0||x>=cols||y>=rows) continue;
+      if(key(arr[idx(x,y)])!==target) continue; arr[idx(x,y)]={sh:sel.sh,c:sel.c,r:sel.r}; st.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]); }
+  }
+}
+function pickAt(c,r){
+  // prefer the active layer, else the topmost visible tile layer that has a tile here
+  let t = isImg(layers[active]) ? null : curTiles()[idx(c,r)];
+  if(!t) for(let i=layers.length-1;i>=0;i--){ const L=layers[i];
+    if(L.visible && L.type==='tiles' && L.tiles[idx(c,r)]){ t=L.tiles[idx(c,r)]; break; } }
+  if(t){ sel={sh:t.sh,c:t.c,r:t.r}; if(sel.sh!==sheet){ sheet=sel.sh; $('sheetSel').value=sheet; } drawPalette(); drawSel(); updateSelText(); }
+}
+
+mapCanvas.addEventListener('mousedown', e=>{
+  if(testMode) return;                            // no painting while walk-testing
+  const im = activeImg();
+  if(im){ if(!im.locked){ pushHistory('imgmove'); refDrag = { sx:e.clientX, sy:e.clientY, gx:im.gx, gy:im.gy }; }
+    e.preventDefault(); return; }                 // locked image: swallow the drag, move nothing
+  const cr = cellFromEvent(e); if(!cr) return;
+  const rightOrAlt = e.button===2 || e.altKey;
+  if(pasteMode){                                   // click stamps; right-click leaves
+    if(rightOrAlt){ exitPaste(); } else { pasteAt(cr.c,cr.r); }
+    e.preventDefault(); return;
+  }
+  if(tool==='select'){
+    selDrag = { c0:cr.c, r0:cr.r, c1:cr.c, r1:cr.r };
+    selRect = normRect(selDrag); updateClipUI(); renderMap(); e.preventDefault(); return;
+  }
+  if(e.altKey){ pickAt(cr.c,cr.r); return; }
+  if(tool==='pick'){ pickAt(cr.c,cr.r); return; }
+  if(tool==='fill' && !rightOrAlt){ pushHistory(); floodFill(cr.c,cr.r); renderMap(); save(); return; }
+  pushHistory();                                  // one step per stroke, not per cell
+  painting = true; eraseDrag = rightOrAlt;
+  applyAt(cr.c,cr.r,eraseDrag); renderMap();
+  e.preventDefault();
+});
+window.addEventListener('mousemove', e=>{
+  if(refDrag){ const im=activeImg();
+    if(im){ im.gx = refDrag.gx + (e.clientX-refDrag.sx)/cell; im.gy = refDrag.gy + (e.clientY-refDrag.sy)/cell; renderMap(); }
+    return; }
+  const cr = cellFromEvent(e);
+  hover = cr;
+  $('stCell').textContent = cr ? `célula: ${cr.c}, ${cr.r}` : 'célula: —';
+  if(selDrag && cr){ selDrag.c1=cr.c; selDrag.r1=cr.r; selRect=normRect(selDrag); updateClipUI(); }
+  if(painting && cr){ applyAt(cr.c,cr.r,eraseDrag); }
+  renderMap();
+});
+window.addEventListener('mouseup', ()=>{ if(painting){ painting=false; save(); }
+  if(refDrag){ refDrag=null; save(); }
+  if(selDrag){ selDrag=null; updateClipUI(); } });
+mapCanvas.addEventListener('contextmenu', e=>e.preventDefault());
+
+// ---------- selection / clipboard ----------
+function normRect(a){ return { c0:Math.min(a.c0,a.c1), r0:Math.min(a.r0,a.r1),
+                               c1:Math.max(a.c0,a.c1), r1:Math.max(a.r0,a.r1) }; }
+function copySel(){
+  if(pasteMode) exitPaste();        // copying always returns you to plain selection
+  if(!selRect) return;
+  const {c0,r0,c1,r1}=selRect, w=c1-c0+1, h=r1-r0+1;
+  clip = { w, h, layers:{}, coll:new Array(w*h).fill(0), over:new Array(w*h).fill(0), mato:new Array(w*h).fill(0) };
+  for(const L of layers){
+    if(L.type==='image') continue;                 // image layers aren't stampable
+    const buf = new Array(w*h).fill(null);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const t = L.tiles[(r0+y)*cols + (c0+x)];
+      buf[y*w+x] = t ? {...t} : null;
+    }
+    clip.layers[L.name] = buf;
+  }
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ clip.coll[y*w+x]=coll[(r0+y)*cols+(c0+x)]; clip.over[y*w+x]=over[(r0+y)*cols+(c0+x)]; clip.mato[y*w+x]=mato[(r0+y)*cols+(c0+x)]; }
+  updateClipUI();
+}
+// The sheet's terrain/building blocks are 3 columns wide (bases 0,5,10,15):
+// left|middle|right. Mirroring must swap left<->right or the walls come out inside-out.
+function mirrorTileH(t){
+  if(!t) return null;
+  const base = Math.floor(t.c/5)*5, off = t.c - base;
+  return (off<=2) ? {...t, c: base + (2-off)} : {...t};
+}
+function mapClip(fn, newW, newH, idxFn){
+  const out = { w:newW, h:newH, layers:{}, coll:new Array(newW*newH).fill(0), over:new Array(newW*newH).fill(0), mato:new Array(newW*newH).fill(0) };
+  for(const [name,buf] of Object.entries(clip.layers)){
+    const nb = new Array(newW*newH).fill(null);
+    for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++) nb[idxFn(x,y)] = fn(buf[y*clip.w+x]);
+    out.layers[name] = nb;
+  }
+  for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){ out.coll[idxFn(x,y)]=clip.coll[y*clip.w+x]; out.over[idxFn(x,y)]=clip.over[y*clip.w+x]; out.mato[idxFn(x,y)]=clip.mato[y*clip.w+x]; }
+  clip = out; updateClipUI(); renderMap();
+}
+function rotateClip(){ if(!clip) return;            // 90° CW: (x,y) -> (h-1-y, x)
+  mapClip(t=>t?{...t}:null, clip.h, clip.w, (x,y)=> x*clip.h + (clip.h-1-y)); }
+function flipClipH(){ if(!clip) return;
+  mapClip(mirrorTileH, clip.w, clip.h, (x,y)=> y*clip.w + (clip.w-1-x)); }
+function flipClipV(){ if(!clip) return;
+  mapClip(t=>t?{...t}:null, clip.w, clip.h, (x,y)=> (clip.h-1-y)*clip.w + x); }
+
+function pasteAt(pc,pr){
+  if(!clip) return;
+  pushHistory();
+  for(const [name,buf] of Object.entries(clip.layers)){
+    let L = layers.find(l=>l.name===name && l.type==='tiles');
+    if(!L){ L = mkLayer(name); layers.push(L); }     // keep structure even in a fresh map
+    for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){
+      const t = buf[y*clip.w+x]; if(!t) continue;    // empty cells don't erase what's there
+      const c=pc+x, r=pr+y; if(!inb(c,r)) continue;
+      L.tiles[r*cols+c] = {...t};
+    }
+  }
+  for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){
+    const c=pc+x, r=pr+y; if(!inb(c,r)) continue;
+    const v=clip.coll[y*clip.w+x]; if(v) coll[r*cols+c]=v;
+    const o=clip.over[y*clip.w+x]; if(o) over[r*cols+c]=o;
+    const m=clip.mato[y*clip.w+x]; if(m) mato[r*cols+c]=m;
+  }
+  setLayer(); renderMap(); save();
+}
+function updateClipUI(){
+  const has=!!clip, hasSel=!!selRect;
+  $('copyBtn').disabled=!hasSel;
+  $('delBtn').disabled=!hasSel; $('delAllBtn').disabled=!hasSel;
+  ['pasteBtn','rotBtn','flipHBtn','flipVBtn'].forEach(id=>$(id).disabled=!has);
+  $('pasteBtn').classList.toggle('on', pasteMode);
+  $('clipInfo').textContent = has ? `${clip.w}×${clip.h} · ${Object.keys(clip.layers).length} camadas`
+                            : (hasSel ? `sel ${selRect.c1-selRect.c0+1}×${selRect.r1-selRect.r0+1}` : '—');
+}
+function enterPaste(){ if(!clip) return; pasteMode=true; tool='select';
+  document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x.dataset.tool==='select'));
+  updateClipUI(); renderMap(); }
+function exitPaste(){ pasteMode=false; updateClipUI(); renderMap(); }
+// Delete has two flavours on purpose: "todas as camadas" also wipes the Chão fill and
+// would punch a hole in the map, so it stays behind Shift.
+function deleteSel(allLayers){
+  if(!selRect) return;
+  if(pasteMode) exitPaste();
+  const {c0,r0,c1,r1}=selRect;
+  let cleared=0, blockedByLock=false;
+  pushHistory();
+  for(let r=r0;r<=r1;r++) for(let c=c0;c<=c1;c++){
+    const i=idx(c,r);
+    if(allLayers){
+      for(const L of layers){
+        if(L.type!=='tiles') continue;
+        if(L.locked){ blockedByLock=true; continue; }   // a locked layer is protected
+        if(L.tiles[i]){ L.tiles[i]=null; cleared++; }
+      }
+      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; }
+    } else if(mode==='coll'){
+      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; }
+    } else {
+      const L=layers[active];
+      if(L.type!=='tiles'){ continue; }
+      if(L.locked){ blockedByLock=true; continue; }
+      if(L.tiles[i]){ L.tiles[i]=null; cleared++; }
+    }
+  }
+  if(!cleared && blockedByLock) alert('Nada apagado: a camada está travada 🔒');
+  renderMap(); save();
+}
+$('delBtn').onclick    = ()=>deleteSel(false);
+$('delAllBtn').onclick = ()=>deleteSel(true);
+$('copyBtn').onclick=copySel;
+$('pasteBtn').onclick=enterPaste;
+$('rotBtn').onclick=rotateClip;
+$('flipHBtn').onclick=flipClipH;
+$('flipVBtn').onclick=flipClipV;
+
+// ---------- image layers (drag an image in to trace over) ----------
+const stage = $('stage');
+['dragenter','dragover'].forEach(ev=>stage.addEventListener(ev, e=>{ e.preventDefault(); stage.classList.add('dragover'); }));
+stage.addEventListener('dragleave', e=>{ if(e.target===stage) stage.classList.remove('dragover'); });
+stage.addEventListener('drop', e=>{
+  e.preventDefault(); stage.classList.remove('dragover');
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(!f || !f.type.startsWith('image/')){ alert('Solte um arquivo de imagem.'); return; }
+  const rd = new FileReader();
+  rd.onload = ()=>{ const img = new Image(); img.onload = ()=>{
+    pushHistory();
+    const name = (f.name||'Referência').replace(/\.[^.]+$/,'').slice(0,24);
+    const L = mkImageLayer(name, img, shrinkForStorage(img, rd.result));
+    layers.push(L); active = layers.length-1; mode='tiles';   // new image layer on top, selected
+    setLayer(); renderMap(); save();
+  }; img.src = rd.result; };
+  rd.readAsDataURL(f);
+});
+// localStorage caps around 5MB — downscale big references so they still persist
+function shrinkForStorage(img, srcURL, maxW=1400, budget=1.0e6){
+  if(img.naturalWidth<=maxW && srcURL.length<budget) return srcURL;
+  const s = Math.min(1, maxW/img.naturalWidth);
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(img.naturalWidth*s); cv.height = Math.round(img.naturalHeight*s);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/jpeg', 0.82);
+}
+// keep the numeric scale fields in step with wheel-zoom / selection
+function syncRefInputs(){
+  const im = activeImg(); if(!im) return;
+  $('refScale').value = Math.round(im.cellsW/im.baseW*1000)/10;   // 0,1% de precisão
+  $('refCells').value = Math.round(im.cellsW*100)/100;            // 0,01 célula
+}
+// number inputs: valueAsNumber respeita a vírgula decimal do locale pt-BR
+const numVal = (el, fallback) => Number.isFinite(el.valueAsNumber) ? el.valueAsNumber : fallback;
+$('refScale').oninput=e=>{ const im=activeImg(); if(!im) return; const p=Math.max(0.1, numVal(e.target,100));
+  im.cellsW = im.baseW * p/100; $('refCells').value = Math.round(im.cellsW*100)/100; renderMap(); saveSoon(); };
+$('refCells').oninput=e=>{ const im=activeImg(); if(!im) return; const w=Math.max(0.1, numVal(e.target,1));
+  im.cellsW = w; $('refScale').value = Math.round(w/im.baseW*1000)/10; renderMap(); saveSoon(); };
+mapCanvas.addEventListener('wheel', e=>{
+  const im = activeImg(); if(!im || im.locked) return;
+  e.preventDefault(); pushHistory('imgscale');
+  const rect = mapCanvas.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)/cell, my=(e.clientY-rect.top)/cell;   // cursor in cell units
+  const stepF = e.shiftKey ? 1.005 : 1.03;                             // Shift = passo ultrafino
+  const f = e.deltaY<0 ? stepF : 1/stepF;
+  im.gx = mx-(mx-im.gx)*f; im.gy = my-(my-im.gy)*f; im.cellsW *= f;
+  syncRefInputs(); renderMap(); saveSoon();
+}, {passive:false});
+
+function setLayer(){
+  const L = layers[active], im = activeImg();
+  $('collGroup').style.display = mode==='coll' ? 'flex' : 'none';
+  $('collLayerBtn').classList.toggle('on', mode==='coll');
+  $('refGroup').style.display  = im ? 'flex' : 'none';   // image controls only for image layers
+  $('toolGroup').style.display = im ? 'none' : 'flex';   // no tile tools on an image layer
+  syncLayerAlpha();
+  if(im) syncRefInputs();
+  const locked = mode==='tiles' && L.locked;
+  mapCanvas.style.cursor = locked ? 'not-allowed' : (im ? 'move' : 'crosshair');
+  $('refScale').disabled = $('refCells').disabled = !!(im && im.locked);
+  $('stLayer').textContent = 'camada: ' + (mode==='coll' ? 'colisão'
+    : L.name + (isImg(L)?' 🖼':'') + (L.locked?' 🔒':''));
+  renderLayerList();
+}
+function renderLayerList(){
+  const el=$('layerList'); el.innerHTML='';
+  for(let i=layers.length-1;i>=0;i--){                  // topmost layer listed first
+    const L=layers[i];
+    const row=document.createElement('div');
+    row.className='lrow'+(mode==='tiles'&&i===active?' sel':'');
+    row.innerHTML=`<button class="eye" title="Mostrar/ocultar">${L.visible?'👁':'🚫'}</button>`+
+      `<button class="lock" title="${L.locked?'Destravar':'Travar (impede editar/mover)'}">${L.locked?'🔒':'🔓'}</button>`+
+      `<span class="lname" title="Duplo clique renomeia">${isImg(L)?'🖼 ':''}${L.name}</span>`+
+      `<button class="mv" data-d="1" title="Subir">↑</button>`+
+      `<button class="mv" data-d="-1" title="Descer">↓</button>`+
+      `<button class="del" title="Excluir">🗑</button>`;
+    row.onclick=()=>{ mode='tiles'; active=i; setLayer(); };
+    row.querySelector('.eye').onclick=e=>{ e.stopPropagation(); L.visible=!L.visible; renderLayerList(); renderMap(); save(); };
+    row.querySelector('.lock').onclick=e=>{ e.stopPropagation(); L.locked=!L.locked; setLayer(); save(); };
+    row.querySelector('.lname').ondblclick=e=>{ e.stopPropagation();
+      const n=prompt('Nome da camada:', L.name); if(n){ L.name=n; setLayer(); save(); } };
+    row.querySelectorAll('.mv').forEach(b=> b.onclick=e=>{ e.stopPropagation(); moveLayer(i, +b.dataset.d); });
+    row.querySelector('.del').onclick=e=>{ e.stopPropagation(); delLayer(i); };
+    el.appendChild(row);
+  }
+}
+function moveLayer(i,d){
+  const j=i+d; if(j<0||j>=layers.length) return;
+  pushHistory();
+  [layers[i],layers[j]]=[layers[j],layers[i]];
+  if(active===i) active=j; else if(active===j) active=i;
+  setLayer(); renderMap(); save();
+}
+function delLayer(i){
+  if(layers.length<=1){ alert('Precisa existir ao menos uma camada.'); return; }
+  if(!confirm(`Excluir a camada "${layers[i].name}"?`)) return;
+  pushHistory();
+  layers.splice(i,1); if(active>=layers.length) active=layers.length-1;
+  setLayer(); renderMap(); save();
+}
+// opacity of the SELECTED layer (any type)
+function syncLayerAlpha(){
+  const a = Math.round(((typeof layers[active].alpha==='number') ? layers[active].alpha : 1)*100);
+  $('layerAlpha').value = a; $('layerAlphaVal').textContent = a+'%';
+}
+$('layerAlpha').oninput=e=>{ const L=layers[active]; if(!L) return;
+  pushHistory('alpha');
+  L.alpha = +e.target.value/100; $('layerAlphaVal').textContent = e.target.value+'%';
+  renderMap(); saveSoon(); };
+$('addLayer').onclick=()=>{ pushHistory();
+  layers.push(mkLayer('Camada '+(layers.length+1))); active=layers.length-1;
+  mode='tiles'; setLayer(); renderMap(); save(); };
+$('undoBtn').onclick=undo;
+$('redoBtn').onclick=redo;
+$('collLayerBtn').onclick=()=>{ mode='coll'; setLayer(); };
+document.querySelectorAll('[data-tool]').forEach(b=> b.onclick=()=>{ tool=b.dataset.tool;
+  if(pasteMode) exitPaste();        // picking any tool leaves paste mode, incl. Seleção
+  document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x===b)); });
+
+// ---------- walk-test: floors + stairs ----------
+// Rule: a hero has a floor level L. It may only enter a floor cell of level L,
+// UNLESS it's stepping off a stair that connects L to that level. Stairs (which
+// connect level s and s+1) may be entered from either of those two levels.
+function collAt(c,r){ if(c<0||r<0||c>=cols||r>=rows) return 1; return coll[r*cols+c]; }  // out of bounds = block
+function bridgeActive(overVal, L){ return overVal>0 && (overVal-1)===L; }   // ponte only works on the level it's bound to
+function canStep(fromVal, L, toVal, toOver){
+  const B=collInfo(toVal); if(B && B.kind==='block') return null;         // bloqueio always wins
+  const A=collInfo(fromVal);
+  const bridge = bridgeActive(toOver, L);
+  if(B && B.kind==='escada'){ if(B.levels.includes(L)) return L; return bridge ? L : null; }
+  if(B && (B.kind==='piso'||B.kind==='spawn')){
+    const M = B.kind==='spawn' ? 0 : B.level;
+    if(M===L) return L;
+    if(A && A.kind==='escada' && A.levels.includes(L) && A.levels.includes(M)) return M;  // off a stair
+    return bridge ? L : null;                                             // a bridge (of your level) lets you pass
+  }
+  return bridge ? L : null;                                              // bare ponte = walkable only on its level
+}
+function heroAxis(nx,ny,horiz){
+  const R=cell*0.34, cc={c:Math.floor(hero.x/cell), r:Math.floor(hero.y/cell)};
+  const fromVal=collAt(cc.c,cc.r);
+  const lead = horiz ? {c:Math.floor((nx+Math.sign(nx-hero.x)*R)/cell), r:Math.floor(hero.y/cell)}
+                     : {c:Math.floor(hero.x/cell), r:Math.floor((ny+Math.sign(ny-hero.y)*R)/cell)};
+  const res=canStep(fromVal, hero.L, collAt(lead.c,lead.r), overAt(lead.c,lead.r));
+  if(res===null) return;
+  if(horiz) hero.x=nx; else hero.y=ny;
+  const nc=Math.floor(hero.x/cell), nr=Math.floor(hero.y/cell);
+  const nv=collInfo(collAt(nc,nr));                                       // adopt the floor's level — but an ACTIVE bridge never changes it
+  if(!bridgeActive(overAt(nc,nr),hero.L) && nv && nv.kind!=='escada') hero.L = nv.kind==='spawn'?0:nv.level;
+}
+function heroStep(dt){
+  let dx=0,dy=0;
+  if(testKeys['w']||testKeys['arrowup'])dy--; if(testKeys['s']||testKeys['arrowdown'])dy++;
+  if(testKeys['a']||testKeys['arrowleft'])dx--; if(testKeys['d']||testKeys['arrowright'])dx++;
+  if(dx||dy){ const l=Math.hypot(dx,dy), spd=6.5*cell*dt; heroAxis(hero.x+dx/l*spd, hero.y, true); heroAxis(hero.x, hero.y+dy/l*spd, false); }
+  // keep the hero in view
+  const sc=$('stage'); sc.scrollLeft=hero.x-sc.clientWidth/2; sc.scrollTop=hero.y-sc.clientHeight/2;
+  $('stCell').textContent = `▶ TESTE · Nível ${hero.L} · WASD anda · Esc sai`;
+}
+function startTest(){
+  let start=null;
+  for(let i=0;i<coll.length;i++){ if(coll[i]===2){ start=i; break; } }            // prefer a Spawn
+  if(start===null) for(let i=0;i<coll.length;i++){ const ci=collInfo(coll[i]); if(ci&&ci.kind==='piso'){ start=i; break; } }
+  if(start===null) for(let i=0;i<mato.length;i++){ if(mato[i]){ start=i; break; } }  // mato cell (decorative, but walkable)
+  if(start===null) for(let i=0;i<over.length;i++){ if(over[i]){ start=i; break; } }  // or a bridge
+  if(start===null){ alert('Pinte Piso (e Escada) antes de testar — o boneco anda sobre o Piso.'); return; }
+  testMode=true; mode='test';
+  const sv=collInfo(coll[start]);
+  const startL = sv&&sv.level!=null ? sv.level : (over[start]?over[start]-1:0);   // a bridge start adopts its level
+  hero={ x:(start%cols)*cell+cell/2, y:((start/cols)|0)*cell+cell/2, L:startL };
+  testKeys={}; $('testBtn').classList.add('on'); $('testBtn').textContent='■ Parar (Esc)';
+  $('collGroup').querySelectorAll('.ck,#lvlDn,#lvlUp,#saDn,#saUp,#sbDn,#sbUp').forEach(b=>b.disabled=true);
+  let last=performance.now();
+  const loop=t=>{ if(!testMode) return; const dt=Math.min(0.05,(t-last)/1000); last=t; heroStep(dt); renderMap(); testRAF=requestAnimationFrame(loop); };
+  testRAF=requestAnimationFrame(loop);
+}
+function stopTest(){ testMode=false; hero=null; mode='coll'; if(testRAF)cancelAnimationFrame(testRAF);
+  $('testBtn').classList.remove('on'); $('testBtn').textContent='▶ Testar';
+  $('collGroup').querySelectorAll('.ck,#lvlDn,#lvlUp,#saDn,#saUp,#sbDn,#sbUp').forEach(b=>b.disabled=false); refreshCollUI(); renderMap(); }
+$('testBtn').onclick=()=>{ testMode?stopTest():startTest(); };
+$('stage').addEventListener('scroll',()=>{ if(!testMode) renderMap(); });   // cull needs a redraw on manual scroll
+// debug hooks for verification
+window.__coll=(c,r)=>coll[r*cols+c]; window.__setColl=(c,r,v)=>{coll[r*cols+c]=v;};
+window.__over=(c,r)=>over[r*cols+c]; window.__setOver=(c,r,v)=>{over[r*cols+c]=v;};
+window.__render=()=>renderMap(); window.__hasTile=(c,r)=>layers.some(L=>L.type==='tiles'&&L.visible&&L.tiles[r*cols+c]);
+window.__hero=()=>hero?{x:Math.round(hero.x),y:Math.round(hero.y),L:hero.L,cc:Math.floor(hero.x/cell),cr:Math.floor(hero.y/cell)}:null;
+window.__startTest=startTest; window.__stopTest=stopTest; window.__key=(k,d)=>{testKeys[k]=d;};
+window.__tickTest=(n,dt)=>{ for(let i=0;i<n;i++) heroStep(dt); return window.__hero(); };
+window.__place=(c,r,L)=>{ if(hero){ hero.x=c*cell+cell/2; hero.y=r*cell+cell/2; hero.L=L; } };
+window.__cellPx=()=>cell;
+
+function refreshCollUI(){
+  document.querySelectorAll('#collGroup .ck').forEach(b=>b.classList.toggle('on', b.dataset.kind===collKind));
+  const isPiso = collKind==='piso', isEsc = collKind==='escada', isPonte = collKind==='ponte';
+  const isMato = collKind==='mato';
+  const showLvl = isPiso || isPonte;                      // ponte também escolhe o nível a que se liga
+  $('lvlLbl').style.display = showLvl?'':'none'; $('lvlLbl').textContent = isPonte?'Liga ao nível':'Nível';
+  $('lvlDn').style.display = $('lvlUp').style.display = $('lvlVal').style.display = showLvl?'':'none';
+  $('stairCtl').style.display = isEsc?'':'none';
+  $('lvlVal').textContent = collLevel; $('lvlVal').style.color = floorColor(collLevel,1);
+  $('saVal').textContent = collStairLo; $('saVal').style.color = floorColor(collStairLo,1);
+  $('sbVal').textContent = collStairHi; $('sbVal').style.color = floorColor(collStairHi,1);
+}
+document.querySelectorAll('#collGroup .ck').forEach(b=> b.onclick=()=>{ collKind=b.dataset.kind; mode='coll'; setLayer(); refreshCollUI(); });
+const clampLvl=v=>Math.max(0,Math.min(N_FLOORS-1,v));
+$('lvlDn').onclick=()=>{ collLevel=clampLvl(collLevel-1); refreshCollUI(); };
+$('lvlUp').onclick=()=>{ collLevel=clampLvl(collLevel+1); refreshCollUI(); };
+$('saDn').onclick=()=>{ collStairLo=clampLvl(collStairLo-1); refreshCollUI(); };
+$('saUp').onclick=()=>{ collStairLo=clampLvl(collStairLo+1); refreshCollUI(); };
+$('sbDn').onclick=()=>{ collStairHi=clampLvl(collStairHi-1); refreshCollUI(); };
+$('sbUp').onclick=()=>{ collStairHi=clampLvl(collStairHi+1); refreshCollUI(); };
+refreshCollUI();
+
+$('zoomIn').onclick =()=>{ cell=Math.min(48,cell+3); renderMap(); };
+$('zoomOut').onclick=()=>{ cell=Math.max(8,cell-3); renderMap(); };
+$('gridToggle').onclick=e=>{ showGrid=!showGrid; e.target.classList.toggle('on',showGrid); renderMap(); };
+$('collView').onclick =e=>{ showColl=!showColl; e.target.classList.toggle('on',showColl); renderMap(); };
+$('resizeBtn').onclick=()=>{
+  const nc=clamp(+$('mCols').value|0,8,200), nr=clamp(+$('mRows').value|0,8,200);
+  if(nc===cols && nr===rows) return;
+  pushHistory();
+  const old=layers, oc=coll, oo=over, om=mato, ocols=cols, orows=rows, oactive=active;
+  cols=nc; rows=nr;
+  layers = old.map(L=>{ if(L.type==='image') return L;            // image layers survive as-is
+    const n=mkLayer(L.name); n.visible=L.visible; return n; });
+  coll = new Array(cols*rows).fill(0);
+  over = new Array(cols*rows).fill(0);
+  mato = new Array(cols*rows).fill(0);
+  active = Math.min(oactive, layers.length-1);
+  for(let r=0;r<Math.min(nr,orows);r++)for(let c=0;c<Math.min(nc,ocols);c++){
+    for(let i=0;i<layers.length;i++){ if(layers[i].type==='image') continue;
+      layers[i].tiles[idx(c,r)] = old[i].tiles[r*ocols+c]; }
+    coll[idx(c,r)] = oc[r*ocols+c];
+    over[idx(c,r)] = oo[r*ocols+c];
+    mato[idx(c,r)] = om[r*ocols+c];
+  }
+  setLayer(); renderMap(); save();
+};
+$('clearBtn').onclick=()=>{ if(confirm('Limpar todo o mapa?\n(dá pra desfazer com Ctrl+Z)')){
+  pushHistory(); blankLayers(); setLayer(); renderMap(); save(); } };
+function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+
+const sheetSel=$('sheetSel');
+Object.entries(SHEETS).forEach(([k,s])=>{ const o=document.createElement('option'); o.value=k; o.textContent=s.label; sheetSel.appendChild(o); });
+sheetSel.onchange=()=>{ sheet=sheetSel.value; drawPalette(); };
+
+window.addEventListener('keyup', e=>{ if(testMode) testKeys[e.key.toLowerCase()]=false; });
+window.addEventListener('keydown', e=>{
+  if(testMode){                                   // walk-test swallows movement keys
+    if(e.key==='Escape'){ stopTest(); return; }
+    const k=e.key.toLowerCase();
+    if('wasd'.includes(k)||k.startsWith('arrow')){ testKeys[k]=true; e.preventDefault(); }
+    return;
+  }
+  if(e.ctrlKey||e.metaKey){                       // undo/redo work even from a field
+    const k=e.key.toLowerCase();
+    if(k==='z' && !e.shiftKey){ e.preventDefault(); undo(); return; }
+    if((k==='z' && e.shiftKey) || k==='y'){ e.preventDefault(); redo(); return; }
+    if(k==='s'){ e.preventDefault(); saveToFile(); return; }
+    if(k==='c'){ e.preventDefault(); copySel(); return; }
+    if(k==='v'){ e.preventDefault(); enterPaste(); return; }
+    return;
+  }
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  if(e.key==='Escape'){ if(pasteMode) exitPaste(); else { selRect=null; updateClipUI(); renderMap(); } return; }
+  if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); deleteSel(e.shiftKey); return; }
+  if(e.key==='r'){ rotateClip(); return; }
+  if(e.key==='h'){ flipClipH(); return; }
+  if(e.key==='v'){ flipClipV(); return; }
+  if(e.key==='s'){ tool='select';
+    document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x.dataset.tool==='select')); return; }
+  if(e.key==='c'){ mode = mode==='coll'?'tiles':'coll'; setLayer(); }
+  else if(e.key==='n'){ $('addLayer').click(); }
+  else if(e.key>='1'&&e.key<='9'){ const i=+e.key-1; if(i<layers.length){ mode='tiles'; active=i; setLayer(); } }
+  else if(e.key==='e'){ tool='erase'; document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x.dataset.tool==='erase')); }
+  else if(e.key==='p'){ tool='paint'; document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x.dataset.tool==='paint')); }
+  else if(e.key==='g'){ $('gridToggle').click(); }
+  else if(e.key==='+'||e.key==='='){ $('zoomIn').click(); }
+  else if(e.key==='-'){ $('zoomOut').click(); }
+});
+
+const LS='desertduel_map';
+function serialize(){
+  const enc = t => t ? [t.sh==='tiles'?0:t.sh, t.c, t.r] : null;
+  return { v:2, tile:16, cols, rows,
+    layers: layers.map(L => L.type==='image'
+      ? { type:'image', name:L.name, visible:L.visible, locked:L.locked, src:L.src,
+          gx:L.gx, gy:L.gy, cellsW:L.cellsW, baseW:L.baseW, alpha:L.alpha }
+      : { type:'tiles', name:L.name, visible:L.visible, locked:L.locked, alpha:L.alpha, tiles:L.tiles.map(enc) }),
+    coll, over, mato };
+}
+let quotaWarned = false, saveT = null;
+// sliders/wheel fire continuously — debounce so a big image dataURL isn't re-serialised per pixel
+function saveSoon(){ clearTimeout(saveT); saveT = setTimeout(save, 400); }
+function save(){
+  try{ localStorage.setItem(LS, JSON.stringify(serialize())); }
+  catch(e){
+    if(!quotaWarned){ quotaWarned = true;
+      alert('Não coube no armazenamento do navegador (imagem de referência muito grande).\n'+
+            'O desenho continua na tela, mas use ⬇️ Exportar para não perder.');
+    }
+  }
+}
+function deserialize(d){
+  if(!d||!d.cols) return false;
+  cols=d.cols; rows=d.rows; blankLayers();
+  const un=t=>{ if(!t) return null; const sh = t[0]===0?'tiles':t[0]; return {sh,c:t[1],r:t[2]}; };
+  if(Array.isArray(d.layers) && d.layers.length){                 // v2: lista de camadas
+    layers = d.layers.map(L=>{
+      if(L.type==='image'){
+        const n = mkImageLayer(L.name||'Referência', null, L.src);
+        n.visible=L.visible!==false; n.locked=!!L.locked; n.gx=L.gx||0; n.gy=L.gy||0;
+        n.cellsW=L.cellsW||cols; n.baseW=L.baseW||cols;
+        n.alpha=(typeof L.alpha==='number')?L.alpha:0.5;
+        if(L.src){ const im=new Image(); im.onload=()=>renderMap(); im.src=L.src; n.img=im; }
+        return n;
+      }
+      const n=mkLayer(L.name||'Camada'); n.visible=L.visible!==false; n.locked=!!L.locked;
+      n.alpha=(typeof L.alpha==='number')?L.alpha:1;
+      (L.tiles||[]).forEach((t,i)=>{ if(i<n.tiles.length) n.tiles[i]=un(t); }); return n; });
+  } else {                                                        // v1 antigo: {base, top}
+    if(d.base) d.base.forEach((t,i)=>{ if(i<layers[0].tiles.length) layers[0].tiles[i]=un(t); });
+    if(d.top)  d.top.forEach((t,i)=>{ if(i<layers[1].tiles.length) layers[1].tiles[i]=un(t); });
+  }
+  active = 0;
+  if(d.coll) d.coll.forEach((v,i)=>{ if(i<coll.length) coll[i]=v||0; });
+  if(d.over) d.over.forEach((v,i)=>{ if(i<over.length) over[i]=v||0; });
+  if(d.mato) d.mato.forEach((v,i)=>{ if(i<mato.length) mato[i]=v||0; });
+  $('mCols').value=cols; $('mRows').value=rows;
+  return true;
+}
+function loadLS(){ try{ const d=JSON.parse(localStorage.getItem(LS)); return d&&deserialize(d); }catch(e){ return false; } }
+
+const dlg=$('ioDlg');
+$('exportBtn').onclick=()=>{ $('ioTitle').textContent='Exportar mapa'; $('ioText').value=JSON.stringify(serialize());
+  $('ioLoad').style.display='none'; dlg.showModal(); $('ioText').select(); };
+$('importBtn').onclick=()=>{ $('ioTitle').textContent='Importar mapa (cole o JSON)'; $('ioText').value='';
+  $('ioLoad').style.display='inline-block'; dlg.showModal(); $('ioText').focus(); };
+$('ioCopy').onclick=()=>{ $('ioText').select(); document.execCommand('copy'); };
+$('ioDownload').onclick=()=>{ const blob=new Blob([$('ioText').value||JSON.stringify(serialize())],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='map.json'; a.click(); };
+$('ioLoad').onclick=()=>{ try{ const d=JSON.parse($('ioText').value); if(deserialize(d)){ renderMap(); save(); dlg.close(); } else alert('JSON inválido'); }catch(e){ alert('Erro: '+e.message); } };
+$('ioClose').onclick=()=>dlg.close();
+// 💾 Salvar writes a real file (map.json) via the dev server; localStorage stays as the autosave
+async function saveToFile(){
+  const btn=$('saveBtn'), old='💾 Salvar';
+  btn.textContent='… salvando';
+  try{
+    const r = await fetch('/save', { method:'POST', headers:{'Content-Type':'application/json'},
+                                     body: JSON.stringify(serialize()) });
+    if(!r.ok) throw new Error('HTTP '+r.status+' '+r.statusText);
+    const j = await r.json();
+    save();                                        // keep the browser copy in sync too
+    btn.textContent='✔ map.json ('+Math.round(j.bytes/1024)+' KB)';
+    $('stFile').textContent = 'salvo em map.json · '+new Date().toLocaleTimeString();
+  }catch(e){
+    btn.textContent='✖ falhou';
+    alert('Não consegui gravar o map.json:\n'+e.message+
+          '\n\nO servidor está rodando? (cd ~/development/DesertDuel && python3 serve.py 8753)\n'+
+          'Seu desenho continua salvo no navegador — use ⬇️ Exportar como alternativa.');
+  }
+  setTimeout(()=>btn.textContent=old, 2500);
+}
+$('saveBtn').onclick=saveToFile;
+
+Promise.all(Object.entries(SHEETS).map(([k,s])=>new Promise(res=>{
+  const i=new Image(); i.onload=()=>{IMG[k]=i;res();}; i.onerror=()=>res(); i.src=s.src;
+}))).then(async ()=>{
+  let loaded = loadLS();                       // browser autosave wins (it's the most recent)
+  if(!loaded){                                 // nothing here? fall back to the file on disk
+    try{
+      const r = await fetch('map.json?t='+Date.now());
+      if(r.ok && deserialize(await r.json())){ loaded = true; $('stFile').textContent = 'carregado de map.json'; }
+    }catch(e){ /* no map.json yet — start empty */ }
+  }
+  if(!loaded) blankLayers();
+  sheetSel.value=sheet; drawPalette(); drawSel(); updateSelText(); setLayer(); updateClipUI(); renderMap();
+});
+</script>
+</body>
+</html>
