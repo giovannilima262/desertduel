@@ -284,8 +284,8 @@ function step(dt){
   // Spawn impact sparks at bullet collision point or max-range target
   for(const b of bullets){ if(b.life<=0){
     const d = Math.hypot(b.vx,b.vy)||1;
-    const nx = b.tx - (b.vx/d)*MTILE*0.25;  // puxa origem pra trás, longe da parede
-    const ny = b.ty - (b.vy/d)*MTILE*0.25;
+    const nx = b.tx + (b.vx/d)*MTILE*0.15;  // faísca um pouco à frente do impacto
+    const ny = b.ty + (b.vy/d)*MTILE*0.15;
     spawnSparks(nx, ny, b.vx, b.vy);
   }}
   bullets = bullets.filter(b => b.life > 0);
@@ -476,13 +476,17 @@ function bulletStep(b, dt){
     return;
   }
 
-  // Borda do mapa — único freio da bala
+  // Borda do mapa
   const cx = Math.floor(b.x / MTILE), cy = Math.floor(b.y / MTILE);
   if(cx < 0 || cy < 0 || cx >= COLS || cy >= ROWS){
     b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
   }
 
-  // Ponte cobre visualmente (3d) mas não barra — a trava é no disparo
+  // Colisão com bloqueio (coll=1)
+  const ci = collInfo(collAt(cx, cy));
+  if(ci && ci.kind === 'block'){
+    b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
+  }
 }
 
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
