@@ -31,10 +31,29 @@ function blitMap(t,x,y){
   const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) return;
   const ts=s[1]; ctx.drawImage(img, t[1]*ts, t[2]*ts, ts, ts, x, y, MTILE, MTILE);
 }
+function blitMapMato(t,x,y,rot){
+  // Draw a tile with wind sway — pivots from bottom-center.
+  // Uses a cached offscreen copy so rotation never bleeds neighbour tiles.
+  const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) return;
+  const ts=s[1];
+  const key=t[0]+'_'+t[1]+'_'+t[2];
+  let tc=matoCache[key];
+  if(!tc){
+    tc=document.createElement('canvas'); tc.width=ts; tc.height=ts;
+    const tctx=tc.getContext('2d'); tctx.imageSmoothingEnabled=false;
+    tctx.drawImage(img, t[1]*ts, t[2]*ts, ts, ts, 0, 0, ts, ts);
+    matoCache[key]=tc;
+  }
+  ctx.save();
+  ctx.translate(x+MTILE/2, y+MTILE);
+  ctx.rotate(rot);
+  ctx.drawImage(tc, 0, 0, ts, ts, -MTILE/2, -MTILE, MTILE, MTILE);
+  ctx.restore();
+}
 
 //======================= MAPA =======================
 let MAP=null, COLS=0, ROWS=0, WORLD_W=0, WORLD_H=0;
-let layers=[], coll=[], over=[];
+let layers=[], coll=[], over=[], mato=[], matoTop={}, matoCache={};
 const idx=(c,r)=>r*COLS+c;
 
 function loadLevel(){
@@ -42,6 +61,16 @@ function loadLevel(){
   layers = MAP.layers.filter(L=>L.type!=='image' && L.visible!==false && Array.isArray(L.tiles));
   coll = MAP.coll || new Array(COLS*ROWS).fill(0);
   over = MAP.over || new Array(COLS*ROWS).fill(0);
+  mato = MAP.mato || new Array(COLS*ROWS).fill(0);
+  matoCache = {};  // fresh tile cache for this level
+  // Pre-compute which layer holds the front sprite for each mato cell
+  matoTop = {};
+  for(let i=0;i<mato.length;i++){
+    if(!mato[i]) continue;
+    for(let li=layers.length-1;li>=0;li--){
+      if(layers[li].tiles[i]){ matoTop[i]=li; break; }
+    }
+  }
 }
 
 //=========== colisão — regras idênticas às do editor ===========
@@ -156,13 +185,24 @@ function draw(){
   const c0=Math.max(0,(cam.x/MTILE|0)-1), r0=Math.max(0,(cam.y/MTILE|0)-1);
   const c1=Math.min(COLS,c0+(VW/VIEW_SCALE/MTILE|0)+3), r1=Math.min(ROWS,r0+(VH/VIEW_SCALE/MTILE|0)+3);
 
-  // 1) camadas do mapa, de baixo pra cima
-  for(const L of layers){
+  // 1) camadas do mapa, de baixo pra cima (mato com animacao de vento)
+  const wNow = performance.now()/1000;
+  for(let li=0; li<layers.length; li++){
+    const L=layers[li];
     const a=(typeof L.alpha==='number')?L.alpha:1;
     if(a<1){ ctx.save(); ctx.globalAlpha=a; }
     const t=L.tiles;
     for(let r=r0;r<r1;r++){ const base=r*COLS;
-      for(let c=c0;c<c1;c++){ const tt=t[base+c]; if(tt) blitMap(tt, c*MTILE, r*MTILE); } }
+      for(let c=c0;c<c1;c++){
+        const i=base+c; const tt=t[i]; if(!tt) continue;
+        if(matoTop[i]===li){
+          const rot=Math.sin(wNow*2.0 + c*0.6 + r*0.9)*0.06;
+          blitMapMato(tt, c*MTILE, r*MTILE, rot);
+        } else {
+          blitMap(tt, c*MTILE, r*MTILE);
+        }
+      }
+    }
     if(a<1) ctx.restore();
   }
 
