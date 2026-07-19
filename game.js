@@ -577,7 +577,8 @@ function draw(){
 	    ctx.rotate(_aimAngle);
 	    if(Math.abs(_aimAngle) > Math.PI/2) ctx.scale(1, -1);
 	    // Bounce de escala na troca de arma
-	    if(swapAnim){ const bt=swapAnim.t/swapAnim.total; const bs=1+Math.sin(bt*Math.PI)*0.4*(1-bt); ctx.scale(bs,bs); }
+	    // começa pequeno, cresce com overshoot
+	    if(swapAnim){ const bt=swapAnim.t/swapAnim.total; const bs=0.5+0.5*bt+Math.sin(bt*Math.PI)*0.3*(1-bt); ctx.scale(bs,bs); }
 	    ctx.drawImage(IMG.weapons, _wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	    ctx.restore();
 	    if(flashT > 0){
