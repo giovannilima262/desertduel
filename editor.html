@@ -100,6 +100,8 @@
     <button id="ckMato"   class="ck" data-kind="mato" title="Vegetação decorativa — renderiza na frente com animação de vento">🌿 Mato</button>
     <button id="ckSombra" class="ck" data-kind="sombra" title="Sombra — quando o player toca, o asset vai pra frente dele">🌘 Sombra</button>
     <button id="ckArmas"  class="ck" data-kind="armas" title="Coloca uma arma no cenário — no jogo o player pega ao passar por cima. Botão direito remove.">🔫 Arma</button>
+    <button id="ckBau"    class="ck" data-kind="bau" title="Baú: clique coloca; clicar de novo ADICIONA a arma escolhida dentro; botão direito tira a última (vazio = remove o baú). No jogo abre ao se aproximar.">🧰 Baú</button>
+    <select id="chestSel" style="display:none"></select>
     <select id="gunSel" style="display:none"></select>
     <span class="lbl" id="lvlLbl">Nível</span>
     <button id="lvlDn">−</button><span id="lvlVal" style="min-width:14px;text-align:center">0</span><button id="lvlUp">+</button>
@@ -244,6 +246,10 @@ const GUNS = [
   {id:'escopeta', nome:'Escopeta', c:7},
 ];
 let gunSelId = 'pistola';
+let chests = [];                          // baús interativos: {c,r,v,items:[gunIds]}
+const CHESTS = [ {id:0, nome:'Laranja', closed:[0,12], open:[1,12]},
+                 {id:1, nome:'Dourado', closed:[2,12], open:[3,12]} ];
+let chestSelV = 1;                        // variante selecionada (dourado)
 let mode = 'tiles';                       // 'tiles' (paint layers[active]) | 'coll'
 let tool = 'paint';
 let sheet = 'tiles';
@@ -281,11 +287,11 @@ function cloneLayer(L){
     : { ...L, tiles:L.tiles.slice() };
 }
 function snapshot(){
-  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice(), sombra: sombra.slice(), guns: guns.map(g=>({...g})) };
+  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice(), sombra: sombra.slice(), guns: guns.map(g=>({...g})), chests: chests.map(b=>({...b, items:b.items.slice()})) };
 }
 function restore(s){
   cols=s.cols; rows=s.rows; active=Math.min(s.active, s.layers.length-1);
-  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice(); sombra = (s.sombra||[]).slice(); guns = (s.guns||[]).map(g=>({...g}));
+  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice(); sombra = (s.sombra||[]).slice(); guns = (s.guns||[]).map(g=>({...g})); chests = (s.chests||[]).map(b=>({...b, items:(b.items||[]).slice()}));
   $('mCols').value=cols; $('mRows').value=rows;
   setLayer(); renderMap(); save();
 }
@@ -315,6 +321,7 @@ function blankLayers(){
   mato = new Array(cols*rows).fill(0);
   sombra = new Array(cols*rows).fill(0);
   guns = [];
+  chests = [];
 }
 function overAt(c,r){ return (c<0||r<0||c>=cols||r>=rows) ? 0 : over[r*cols+c]; }
 const isImg     = L => !!L && L.type==='image';
@@ -435,6 +442,22 @@ function renderMap(){
       mapCtx.drawImage(IMG.weapons, w.c*24, 0, 24, 24, x+cell*0.05, y-cell*0.1, cell*0.9, cell*0.9);
     }
   }
+  // baús interativos (fechados no editor) + badge com nº de armas dentro
+  if(IMG.tiles){
+    for(const b of chests){
+      if(b.c<vc0-1||b.c>=vc1||b.r<vr0-1||b.r>=vr1) continue;
+      const v=CHESTS[b.v]||CHESTS[1];
+      const x=b.c*cell, y=b.r*cell;
+      mapCtx.drawImage(IMG.tiles, v.closed[0]*16, v.closed[1]*16, 16, 16, x, y, cell, cell);
+      if(b.items.length){
+        mapCtx.fillStyle='rgba(20,15,25,0.9)';
+        mapCtx.beginPath(); mapCtx.arc(x+cell-4, y+4, Math.max(6,cell*0.24), 0, 6.28); mapCtx.fill();
+        mapCtx.fillStyle='#f4c95d'; mapCtx.font='bold '+Math.round(cell*0.34)+'px system-ui';
+        mapCtx.textAlign='center'; mapCtx.textBaseline='middle';
+        mapCtx.fillText(b.items.length, x+cell-4, y+5);
+      }
+    }
+  }
   if(showColl || testMode){
     const lblOn = cell>=16;
     mapCtx.textAlign='center'; mapCtx.textBaseline='middle'; mapCtx.font=Math.round(cell*0.5)+'px system-ui';
@@ -548,6 +571,15 @@ function cellFromEvent(e){
   if(c<0||r<0||c>=cols||r>=rows) return null;
   return {c,r};
 }
+function bauClick(c,r,erase){
+  const i=chests.findIndex(b=>b.c===c&&b.r===r);
+  if(erase){                                     // direito: tira a última arma; vazio = remove o baú
+    if(i>=0){ const b=chests[i]; if(b.items.length) b.items.pop(); else chests.splice(i,1); }
+    return;
+  }
+  if(i>=0){ if(chests[i].items.length<6) chests[i].items.push(gunSelId); }   // clicar de novo = enche
+  else chests.push({c,r,v:chestSelV,items:[gunSelId]});                      // primeiro clique = já bota a arma
+}
 function applyAt(c,r,erase){
   const i = idx(c,r);
   if(mode==='coll'){
@@ -612,6 +644,9 @@ mapCanvas.addEventListener('mousedown', e=>{
   if(e.altKey){ pickAt(cr.c,cr.r); return; }
   if(tool==='pick'){ pickAt(cr.c,cr.r); return; }
   if(tool==='fill' && !rightOrAlt){ pushHistory(); floodFill(cr.c,cr.r); renderMap(); save(); return; }
+  if(mode==='coll' && collKind==='bau'){          // baú: 1 clique = 1 ação (sem arrasto)
+    pushHistory(); bauClick(cr.c,cr.r,rightOrAlt); renderMap(); save(); e.preventDefault(); return;
+  }
   pushHistory();                                  // one step per stroke, not per cell
   painting = true; eraseDrag = rightOrAlt;
   applyAt(cr.c,cr.r,eraseDrag); renderMap();
@@ -729,9 +764,11 @@ function deleteSel(allLayers){
       }
       if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
       const gl=guns.length; guns=guns.filter(g=>!(g.c===c&&g.r===r)); cleared+=gl-guns.length;
+      const bl=chests.length; chests=chests.filter(b=>!(b.c===c&&b.r===r)); cleared+=bl-chests.length;
     } else if(mode==='coll'){
       if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
       const gl=guns.length; guns=guns.filter(g=>!(g.c===c&&g.r===r)); cleared+=gl-guns.length;
+      const bl=chests.length; chests=chests.filter(b=>!(b.c===c&&b.r===r)); cleared+=bl-chests.length;
     } else {
       const L=layers[active];
       if(L.type!=='tiles'){ continue; }
@@ -964,12 +1001,13 @@ window.__cellPx=()=>cell;
 function refreshCollUI(){
   document.querySelectorAll('#collGroup .ck').forEach(b=>b.classList.toggle('on', b.dataset.kind===collKind));
   const isPiso = collKind==='piso', isEsc = collKind==='escada', isPonte = collKind==='ponte';
-  const isMato = collKind==='mato', isArmas = collKind==='armas';
+  const isMato = collKind==='mato', isArmas = collKind==='armas', isBau = collKind==='bau';
   const showLvl = isPiso || isPonte;                      // ponte também escolhe o nível a que se liga
   $('lvlLbl').style.display = showLvl?'':'none'; $('lvlLbl').textContent = isPonte?'Liga ao nível':'Nível';
   $('lvlDn').style.display = $('lvlUp').style.display = $('lvlVal').style.display = showLvl?'':'none';
   $('stairCtl').style.display = isEsc?'':'none';
-  $('gunSel').style.display = isArmas?'':'none';
+  $('gunSel').style.display = (isArmas||isBau)?'':'none';   // no baú, o gunSel escolhe a arma a ADICIONAR
+  $('chestSel').style.display = isBau?'':'none';
   $('lvlVal').textContent = collLevel; $('lvlVal').style.color = floorColor(collLevel,1);
   $('saVal').textContent = collStairLo; $('saVal').style.color = floorColor(collStairLo,1);
   $('sbVal').textContent = collStairHi; $('sbVal').style.color = floorColor(collStairHi,1);
@@ -983,7 +1021,11 @@ $('saUp').onclick=()=>{ collStairLo=clampLvl(collStairLo+1); refreshCollUI(); };
 $('sbDn').onclick=()=>{ collStairHi=clampLvl(collStairHi-1); refreshCollUI(); };
 $('sbUp').onclick=()=>{ collStairHi=clampLvl(collStairHi+1); refreshCollUI(); };
 GUNS.forEach(w=>{ const o=document.createElement('option'); o.value=w.id; o.textContent='🔫 '+w.nome; $('gunSel').appendChild(o); });
+$('gunSel').value = gunSelId;
 $('gunSel').onchange=e=>{ gunSelId=e.target.value; };
+CHESTS.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent='🧰 '+v.nome; $('chestSel').appendChild(o); });
+$('chestSel').value=chestSelV;
+$('chestSel').onchange=e=>{ chestSelV=+e.target.value; };
 refreshCollUI();
 
 $('zoomIn').onclick =()=>{ cell=Math.min(48,cell+3); renderMap(); };
@@ -1012,6 +1054,7 @@ $('resizeBtn').onclick=()=>{
     sombra[idx(c,r)] = osb[r*ocols+c];
   }
   guns = guns.filter(g=>g.c<cols && g.r<rows);
+  chests = chests.filter(b=>b.c<cols && b.r<rows);
   setLayer(); renderMap(); save();
 };
 $('clearBtn').onclick=()=>{ if(confirm('Limpar todo o mapa?\n(dá pra desfazer com Ctrl+Z)')){
@@ -1065,7 +1108,7 @@ function serialize(){
       ? { type:'image', name:L.name, visible:L.visible, locked:L.locked, src:L.src,
           gx:L.gx, gy:L.gy, cellsW:L.cellsW, baseW:L.baseW, alpha:L.alpha }
       : { type:'tiles', name:L.name, visible:L.visible, locked:L.locked, alpha:L.alpha, tiles:L.tiles.map(enc) }),
-    coll, over, mato, sombra, guns };
+    coll, over, mato, sombra, guns, chests };
 }
 let quotaWarned = false, saveT = null;
 // sliders/wheel fire continuously — debounce so a big image dataURL isn't re-serialised per pixel
@@ -1106,6 +1149,8 @@ function deserialize(d){
   if(d.mato) d.mato.forEach((v,i)=>{ if(i<mato.length) mato[i]=v||0; });
   if(d.sombra) d.sombra.forEach((v,i)=>{ if(i<sombra.length) sombra[i]=v||0; });
   guns = Array.isArray(d.guns) ? d.guns.filter(g=>g&&inb(g.c,g.r)&&GUNS.some(w=>w.id===g.t)).map(g=>({c:g.c,r:g.r,t:g.t})) : [];
+  chests = Array.isArray(d.chests) ? d.chests.filter(b=>b&&inb(b.c,b.r)).map(b=>({c:b.c,r:b.r,v:CHESTS[b.v]?b.v:1,
+    items:(b.items||[]).filter(t=>GUNS.some(w=>w.id===t))})) : [];
   $('mCols').value=cols; $('mRows').value=rows;
   return true;
 }

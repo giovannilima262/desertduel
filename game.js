@@ -64,6 +64,13 @@ function loadLevel(){
   mato = MAP.mato || new Array(COLS*ROWS).fill(0);
   sombra = MAP.sombra || new Array(COLS*ROWS).fill(0);
   gunItems = (MAP.guns||[]).filter(g=>WEAPONS[g.t]).map(g=>({c:g.c, r:g.r, t:g.t, bob:Math.random()*6.28}));
+  chests = (MAP.chests||[]).map(b=>({ c:b.c, r:b.r, v:CHEST_TILES[b.v]?b.v:1,
+    items:(b.items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[] }));
+  // Baús bloqueiam balas — marca a célula como block se estiver vazia
+  for(const b of chests){
+    const i = b.r * COLS + b.c;
+    if(!coll[i]) coll[i] = 1;
+  }
   matoCache = {};  // fresh tile cache for this level
   // Pre-compute topmost layer for mato and sombra cells
   matoTop = {}; sombraTop = {};
@@ -206,6 +213,11 @@ const WEAPONS = {
 let gun = 'pistola';        // arma atual do player
 let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
 let overlapGun = -1;        // item sob o player no frame anterior (troca só AO ENTRAR — sem flip-flop parado)
+// ── BAÚS: fechado → carregando (treme/brilha ao se aproximar) → aberto (armas saltam) ──
+const CHEST_TILES = [ {closed:[0,12], open:[1,12]}, {closed:[2,12], open:[3,12]} ];   // laranja, dourado
+const CHEST_RANGE = MTILE*1.7;      // distância que dispara a abertura
+const CHEST_CHARGE = 0.55;          // segundos tremendo antes de abrir
+let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open', t, loot:[voos]}
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -261,6 +273,24 @@ function step(dt){
     swapAnim={t:0, total:0.18};
   }
   overlapGun = curOverlap;
+
+  // ── Baús: aproximar → carrega (treme) → abre e as armas saltam ──
+  for(const b of chests){
+    const bx=b.c*MTILE+MTILE/2, by=b.r*MTILE+MTILE/2;
+    if(b.st==='closed'){
+      if(Math.hypot(player.x-bx, player.y-by) < CHEST_RANGE){ b.st='charging'; b.t=0; }
+    } else if(b.st==='charging'){
+      b.t+=dt;
+      if(b.t>=CHEST_CHARGE){
+        b.st='open'; b.t=0; chestSound();
+        scatterChestLoot(b);
+      }
+    } else if(b.st==='open' && b.loot.length){
+      for(const f of b.loot){ f.t0+=dt;
+        if(f.t0>=f.dur) gunItems.push({c:f.lc, r:f.lr, t:f.t, bob:Math.random()*6.28}); }
+      b.loot=b.loot.filter(f=>f.t0<f.dur);
+    }
+  }
 
   // ── Shooting (cadência/auto por arma) ──
   const w = WEAPONS[gun];
@@ -376,6 +406,31 @@ function pickupSound(){
   src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
 }
+function chestSound(){
+  // chime subindo + pop — sinal de loot
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  [[520,0],[780,0.07],[1040,0.14]].forEach(([f,d])=>{
+    const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
+    const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
+    g.gain.exponentialRampToValueAtTime(0.09,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.18);
+    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.2);
+  });
+}
+function scatterChestLoot(b){
+  const bx = b.c*MTILE+MTILE/2, by = b.r*MTILE+MTILE/2;
+  const dirs = [[0,1],[1,0],[-1,0],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+  let di = 0;
+  for(let k=0;k<b.items.length;k++){
+    let lc=b.c, lr=b.r+1;                                       // fallback: logo abaixo
+    while(di<dirs.length){ const cc=b.c+dirs[di][0], rr=b.r+dirs[di][1]; di++;
+      const ci=collInfo(collAt(cc,rr));
+      if(!(ci&&ci.kind==='block')){ lc=cc; lr=rr; break; } }
+    b.loot.push({ t:b.items[k], t0:0, dur:0.38+k*0.09,
+      x0:bx, y0:by-4, x1:lc*MTILE+MTILE/2, y1:lr*MTILE+MTILE/2, lc, lr });
+  }
+  b.items = [];
+}
 function shoot(){
   const w = WEAPONS[gun];
   recoilForce = w.recoil;
@@ -482,9 +537,15 @@ function bulletStep(b, dt){
     b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
   }
 
-  // Colisão com bloqueio (coll=1)
+  // Colisão com bloqueio (coll=1) — baús abrem instantâneo ao serem atingidos
   const ci = collInfo(collAt(cx, cy));
   if(ci && ci.kind === 'block'){
+    // Verifica se tem baú fechado nessa célula
+    const chestHere = chests.find(b => b.c === cx && b.r === cy && b.st === 'closed');
+    if(chestHere){
+      chestHere.st = 'open'; chestHere.t = 0; chestSound();
+      scatterChestLoot(chestHere);
+    }
     b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
   }
 }
@@ -635,6 +696,31 @@ function draw(){
       ctx.fillStyle='rgba(0,0,0,0.25)';
       ctx.beginPath(); ctx.ellipse(it.c*MTILE+MTILE/2, it.r*MTILE+MTILE*0.85, MTILE*0.34, MTILE*0.13, 0, 0, 6.28); ctx.fill();
       ctx.drawImage(IMG.weapons, w.spr*SPR, 0, SPR, SPR, gx-(SPR-MTILE)/2, gy-(SPR-MTILE)/2-2, SPR, SPR);
+    }
+  }
+
+  // 3a.6) baús interativos: fechado → tremendo/brilhando → aberto + loot saltando
+  if(IMG.tiles){
+    const tN=performance.now()/1000;
+    for(const b of chests){
+      if(b.c<c0-1||b.c>=c1||b.r<r0-1||b.r>=r1) continue;
+      const v=CHEST_TILES[b.v];
+      let bdx=0, glow=0;
+      if(b.st==='charging'){ bdx=Math.sin(b.t*55)*1.3; glow=Math.min(1,b.t/CHEST_CHARGE); }
+      if(glow>0){ ctx.save(); ctx.globalAlpha=0.35*glow; ctx.fillStyle='#ffd97a';
+        ctx.beginPath(); ctx.arc(b.c*MTILE+MTILE/2, b.r*MTILE+MTILE/2, MTILE*(0.6+0.2*Math.sin(tN*12)), 0, 6.28); ctx.fill();
+        ctx.restore(); }
+      const sp=(b.st==='open')?v.open:v.closed;
+      ctx.drawImage(IMG.tiles, sp[0]*16, sp[1]*16, 16, 16, b.c*MTILE+bdx, b.r*MTILE, MTILE, MTILE);
+      // armas saltando do baú (arco + giro + pop de escala)
+      if(IMG.weapons) for(const f of b.loot){
+        const k=Math.min(1, f.t0/f.dur);
+        const fx=f.x0+(f.x1-f.x0)*k, fy=f.y0+(f.y1-f.y0)*k - Math.sin(Math.PI*k)*12;
+        const sc=0.7+0.3*Math.sin(Math.PI*k);
+        const w=WEAPONS[f.t];
+        ctx.save(); ctx.translate(fx,fy); ctx.rotate(Math.sin(k*6.28)*0.4); ctx.scale(sc,sc);
+        ctx.drawImage(IMG.weapons, w.spr*SPR, 0, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR); ctx.restore();
+      }
     }
   }
 
@@ -817,6 +903,9 @@ window.__place=(c,r,L)=>{ player.x=c*MTILE+MTILE/2; player.y=r*MTILE+MTILE/2; pl
 window.__coll=(c,r)=>collAt(c,r); window.__over=(c,r)=>overAt(c,r);
 window.__gun=()=>({atual:gun, chao:gunItems.map(g=>g.t+'@'+g.c+','+g.r), balas:bullets.length, cd:+fireCooldown.toFixed(3), recuo:+recoilForce.toFixed(2)});
 window.__spawnGun=(c,r,t)=>{ if(WEAPONS[t]) gunItems.push({c,r,t,bob:0}); return window.__gun(); };
+window.__spawnChest=(c,r,items,v)=>{ chests.push({c,r,v:CHEST_TILES[v]?v:1,
+  items:(items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[]}); return chests.length; };
+window.__chests=()=>chests.map(b=>({c:b.c,r:b.r,st:b.st,dentro:b.items.length,voando:b.loot.length}));
 window.__mouse=(down)=>{ mouse.down=down; };
 window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
 
