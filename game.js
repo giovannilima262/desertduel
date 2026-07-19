@@ -174,7 +174,7 @@ let recoilForce = 0;        // current recoil offset (decays)
 let bullets = [];           // projectiles: {x,y,vx,vy,life}
 let hits = [];              // impact sparks at target
 let shakePhase = 0;          // screen shake damped oscillation
-const FIRE_RATE = 0.18;     // seconds between shots
+const FIRE_RATE = 0.35;     // seconds between shots
 let fireCooldown = 0;       // time until next shot allowed
 
 function moveAxis(nx,ny,horiz){
@@ -228,13 +228,40 @@ function step(dt){
   cam.x += shakeX; cam.y += shakeY;  // direct offset, returns to 0 naturally
 }
 
+// Synth gunshot sound — layered for a punchy pixel-art feel (Web Audio, no files)
+let audioCtx=null;
+function gunSound(){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  // ── Sharp attack click (firing pin) ──
+  const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(2400,t); clk.frequency.exponentialRampToValueAtTime(600,t+0.01);
+  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.08,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
+  clk.connect(cg); cg.connect(audioCtx.destination);
+  clk.start(t); clk.stop(t+0.015);
+  // ── Noise body (the "bang") ──
+  const len=0.1, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,sr*len|0,sr);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.12));
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.09,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(1800,t); bp.frequency.exponentialRampToValueAtTime(200,t+len);
+  bp.Q.setValueAtTime(1.2,t);
+  src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
+  src.start(t); src.stop(t+len);
+  // ── Sub punch ──
+  const osc=audioCtx.createOscillator(); osc.type='sine'; osc.frequency.setValueAtTime(90,t); osc.frequency.exponentialRampToValueAtTime(25,t+0.05);
+  const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+  osc.connect(og); og.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t+0.05);
+}
 function shoot(){
-  recoilForce = 5;
+  recoilForce = 2;
   shakePhase = 1;
+  gunSound();
   const angle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
   const gx = player.x + Math.cos(angle)*SPR*0.45;
   const gy = player.y-6 + Math.sin(angle)*SPR*0.45;
-  // Raycast: find where the bullet actually hits (wall, different floor, etc.)
+  // Raycast: track level changes through stairs, stop at walls/wrong floors
   const hit = raycast(gx, gy, mouse.wx, mouse.wy, player.L);
   const dist = Math.hypot(hit.x - gx, hit.y - gy);
   const bulletSpeed = MTILE*35;
@@ -243,46 +270,58 @@ function shoot(){
     vx: Math.cos(angle)*bulletSpeed,
     vy: Math.sin(angle)*bulletSpeed,
     tx: hit.x, ty: hit.y,
+    level: player.L,         // starting level
     life: dist/bulletSpeed
   });
 }
 
-// Raycast: step through cells from (x1,y1) to (x2,y2), stop at first blocking cell.
-// Returns the world-position hit point. A cell blocks if the player can't walk there.
-function raycast(x1, y1, x2, y2, L){
-  const dx=x2-x1, dy=y2-y1;
-  const steps = Math.ceil(Math.hypot(dx, dy) / (MTILE*0.5)); // half-tile steps
-  for(let i=1; i<=steps; i++){
-    const t = i/steps;
-    const cx = Math.floor((x1 + dx*t)/MTILE);
-    const cy = Math.floor((y1 + dy*t)/MTILE);
-    if(blocksBullet(cx, cy, L)){
-      // Back up to edge of blocking cell
-      return { x: x1 + dx*(i-1)/steps, y: y1 + dy*(i-1)/steps };
+// Raycast: step cell-by-cell from (x1,y1) to (x2,y2), tracking level changes
+// through stairs. Returns the world hit point and the bullet's level at impact.
+function raycast(x1, y1, x2, y2, startL){
+  const dx=x2-x1, dy=y2-y1, dist=Math.hypot(dx,dy);
+  if(dist<0.01) return {x:x2,y:y2,L:startL};
+  const steps=Math.ceil(dist/(MTILE*0.4));  // fine steps
+  let curL=startL, lastX=x1, lastY=y1;
+  let prevC=Math.floor(x1/MTILE), prevR=Math.floor(y1/MTILE);
+  for(let i=1;i<=steps;i++){
+    const t=i/steps;
+    const px=x1+dx*t, py=y1+dy*t;
+    const cx=Math.floor(px/MTILE), cy=Math.floor(py/MTILE);
+    if(cx!==prevC||cy!==prevR){  // entered new cell
+      const ci=collInfo(collAt(cx,cy));
+      // Wall blocks at any level
+      if(ci&&ci.kind==='block') return {x:lastX,y:lastY,L:curL};
+      // Map edge
+      if(cx<0||cy<0||cx>=COLS||cy>=ROWS) return {x:lastX,y:lastY,L:curL};
+      // Floor/spawn: only pass if same level (or bridge makes it walkable)
+      const ov=overAt(cx,cy);
+      if(bridgeActive(ov,curL)){ /* pass, level stays */ }
+      else if(ci&&(ci.kind==='piso'||ci.kind==='spawn')){
+        const cellL=ci.kind==='spawn'?0:ci.level;
+        if(cellL!==curL) return {x:lastX,y:lastY,L:curL};  // wrong floor = hit
+      }
+      // Stair: can change level to the other end of the stair
+      else if(ci&&ci.kind==='escada'){
+        if(!ci.levels.includes(curL)) return {x:lastX,y:lastY,L:curL};  // unreachable
+        // Adopt the other level if stair connects two
+        if(ci.levels.length===2) curL=ci.levels[0]===curL?ci.levels[1]:ci.levels[0];
+      }
+      // Empty + no bridge = hit (void)
+      else if(!ci) return {x:lastX,y:lastY,L:curL};
+      prevC=cx; prevR=cy;
     }
+    lastX=px; lastY=py;
   }
-  return { x: x2, y: y2 }; // no wall hit, reach crosshair
-}
-function blocksBullet(c, r, L){
-  if(c<0||r<0||c>=COLS||r>=ROWS) return true;            // map edge
-  const v=collAt(c,r);
-  if(v===1) return true;                                   // block wall
-  const ci=collInfo(v);
-  if(!ci) return !bridgeActive(overAt(c,r), L);           // empty: pass only if bridge at this level
-  if(ci.kind==='block') return true;
-  if(ci.kind==='spawn') return L!==0;                     // pass only if on level 0
-  if(ci.kind==='piso') return ci.level!==L;               // pass only if same floor
-  if(ci.kind==='escada') return !ci.levels.includes(L);   // pass only if reachable
-  return true;                                              // unknown = block
+  return {x:x2,y:y2,L:curL};  // reached crosshair
 }
 function spawnSparks(x, y){
-  for(let i=0;i<4;i++){
+  for(let i=0;i<6;i++){
     const a = Math.random()*6.28;
     const spd = MTILE*(3+Math.random()*6);
     hits.push({
       x, y,
       vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
-      life: 0.12+Math.random()*0.08
+      life: 0.15+Math.random()*0.1,
     });
   }
 }
@@ -353,25 +392,6 @@ function draw(){
     }
   }
 
-  // 2.5) Bullet projectiles (custom drawn circles)
-  for(const b of bullets){
-    ctx.fillStyle='#1a1410';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 2.5, 0, 6.28); ctx.fill();
-    ctx.fillStyle='#ffe875';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 1.8, 0, 6.28); ctx.fill();
-    ctx.fillStyle='#fff';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
-  }
-  // Impact sparks (when bullet hits something or expires)
-  for(const h of hits){
-    const alpha = h.life/0.15;
-    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
-    ctx.fillStyle=`rgba(255,200,60,${alpha})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
-    ctx.fillStyle=`rgba(255,255,255,${alpha})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
-  }
-
   // 3) oclusão por andar + ponte: bloqueios ao redor da ponte viram
   //    cobertura quando o player pisa nela (efeito de profundidade).
   const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
@@ -398,6 +418,22 @@ function draw(){
       window.__occ++;
       break;
     }
+  }
+
+  // 4) Balas e sparks (sempre na frente de tudo)
+  for(const b of bullets){
+    ctx.fillStyle='#2a2218';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
+    ctx.fillStyle='#f0e8d8';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+  }
+  for(const h of hits){
+    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
+    const alpha = h.life/0.25;
+    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
+    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
   }
 
   // HUD
