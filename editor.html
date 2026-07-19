@@ -470,11 +470,15 @@ function renderMap(){
     mapCtx.fillStyle='#ffffff'; mapCtx.strokeStyle='#2a2320'; mapCtx.lineWidth=2;
     mapCtx.beginPath(); mapCtx.arc(hero.x,hero.y,R,0,6.28); mapCtx.fill(); mapCtx.stroke();
     mapCtx.fillStyle=floorColor(hero.L,1); mapCtx.beginPath(); mapCtx.arc(hero.x,hero.y,R*0.55,0,6.28); mapCtx.fill();
-    // occlusion: on 'ponte' cells bound to the hero's level, only the FRONTMOST sprite
-    // (the topmost visible tile at that cell) redraws in front — ground/lower sprites stay behind the player
-    window.__occDbg={heroL:hero.L, vc0,vc1,vr0,vr1, matched:0, drawn:0};
+    // occlusion: cells ABOVE the hero (higher floor/stair, or ponte at/above his level)
+    // redraw only their FRONTMOST sprite over him — ground/lower sprites stay behind the player.
+    // EXCEÇÃO: em cima de uma ESCADA o player fica acima de qualquer camada (nada o cobre).
+    const heroCi = collInfo(collAt(Math.floor(hero.x/cell), Math.floor(hero.y/cell)));
+    const naEscada = !!(heroCi && heroCi.kind==='escada');
+    window.__occDbg={heroL:hero.L, naEscada, vc0,vc1,vr0,vr1, matched:0, drawn:0};
+    if(!naEscada)
     for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ const i=idx(c,r);
-      if(!bridgeActive(over[i],hero.L)) continue;
+      if(!coversHero(i,hero.L)) continue;
       window.__occDbg.matched++;
       for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
         if(!L.visible || L.type==='image' || !L.tiles[i]) continue;
@@ -812,6 +816,15 @@ document.querySelectorAll('[data-tool]').forEach(b=> b.onclick=()=>{ tool=b.data
 // connect level s and s+1) may be entered from either of those two levels.
 function collAt(c,r){ if(c<0||r<0||c>=cols||r>=rows) return 1; return coll[r*cols+c]; }  // out of bounds = block
 function bridgeActive(overVal, L){ return overVal>0 && (overVal-1)===L; }   // ponte only works on the level it's bound to
+// Does this cell's geometry sit ABOVE the hero? Then its frontmost sprite must cover him:
+// ponte at/above his level, or a floor/stair whose (lowest) level is strictly higher.
+function coversHero(i, L){
+  const ov=over[i]; if(ov>0 && (ov-1)>=L) return true;
+  const ci=collInfo(coll[i]);
+  if(ci && ci.kind==='piso')   return ci.level > L;
+  if(ci && ci.kind==='escada') return Math.min(...ci.levels) > L;
+  return false;
+}
 function canStep(fromVal, L, toVal, toOver){
   const B=collInfo(toVal); if(B && B.kind==='block') return null;         // bloqueio always wins
   const A=collInfo(fromVal);
