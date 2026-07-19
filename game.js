@@ -65,6 +65,17 @@ function coversHero(i,L){
   if(ci && ci.kind==='escada') return Math.min(...ci.levels) > L;
   return false;
 }
+function blockNearBridge(c,r,L){
+  // Returns true if this block collider is adjacent (8-way) to a bridge cell at level L.
+  // Used so blocks around a bridge render on top of the player when they're on that bridge.
+  for(let dr=-1; dr<=1; dr++){
+    for(let dc=-1; dc<=1; dc++){
+      if(dr===0 && dc===0) continue;
+      if(bridgeActive(overAt(c+dc, r+dr), L)) return true;
+    }
+  }
+  return false;
+}
 function canStep(fromVal,L,toVal,toOver){
   const B=collInfo(toVal); if(B && B.kind==='block') return null;
   const A=collInfo(fromVal);
@@ -152,14 +163,21 @@ function draw(){
     ctx.restore();
   }
 
-  // 3) oclusão por andar: célula acima do player → só o sprite mais à frente cobre.
-  //    EXCEÇÃO: em cima de uma ESCADA o player fica acima de qualquer camada.
+  // 3) oclusão por andar + ponte: bloqueios ao redor da ponte viram
+  //    cobertura quando o player pisa nela (efeito de profundidade).
   const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
   const naEscada = !!(pci && pci.kind==='escada');
-  window.__occ=0; window.__esc=naEscada;
+  const pcc=Math.floor(player.x/MTILE), pcr=Math.floor(player.y/MTILE);
+  const onBridge = !naEscada && bridgeActive(overAt(pcc, pcr), player.L);
+  window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge;
   if(!naEscada)
   for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
-    if(!coversHero(i,player.L)) continue;
+    let cover = coversHero(i,player.L);
+    if(!cover && onBridge){
+      const ci=collInfo(coll[i]);
+      if(ci && ci.kind==='block') cover = blockNearBridge(c, r, player.L);
+    }
+    if(!cover) continue;
     for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
       if(!L.tiles[i]) continue;
       const a=(typeof L.alpha==='number')?L.alpha:1;

@@ -475,10 +475,17 @@ function renderMap(){
     // EXCEÇÃO: em cima de uma ESCADA o player fica acima de qualquer camada (nada o cobre).
     const heroCi = collInfo(collAt(Math.floor(hero.x/cell), Math.floor(hero.y/cell)));
     const naEscada = !!(heroCi && heroCi.kind==='escada');
-    window.__occDbg={heroL:hero.L, naEscada, vc0,vc1,vr0,vr1, matched:0, drawn:0};
+    const hcc=Math.floor(hero.x/cell), hcr=Math.floor(hero.y/cell);
+    const onBridge = !naEscada && bridgeActive(overAt(hcc, hcr), hero.L);
+    window.__occDbg={heroL:hero.L, naEscada, onBridge, vc0,vc1,vr0,vr1, matched:0, drawn:0};
     if(!naEscada)
     for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ const i=idx(c,r);
-      if(!coversHero(i,hero.L)) continue;
+      let cover = coversHero(i,hero.L);
+      if(!cover && onBridge){
+        const ci=collInfo(coll[i]);
+        if(ci && ci.kind==='block') cover = blockNearBridge(c, r, hero.L);
+      }
+      if(!cover) continue;
       window.__occDbg.matched++;
       for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
         if(!L.visible || L.type==='image' || !L.tiles[i]) continue;
@@ -823,6 +830,15 @@ function coversHero(i, L){
   const ci=collInfo(coll[i]);
   if(ci && ci.kind==='piso')   return ci.level > L;
   if(ci && ci.kind==='escada') return Math.min(...ci.levels) > L;
+  return false;
+}
+function blockNearBridge(c,r,L){
+  for(let dr=-1; dr<=1; dr++){
+    for(let dc=-1; dc<=1; dc++){
+      if(dr===0 && dc===0) continue;
+      if(bridgeActive(overAt(c+dc, r+dr), L)) return true;
+    }
+  }
   return false;
 }
 function canStep(fromVal, L, toVal, toOver){
