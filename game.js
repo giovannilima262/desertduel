@@ -292,6 +292,7 @@ function step(dt){
     footprintDist += s;
     if(footprintDist >= MTILE*0.75){  // uma pegada a cada ~12px
       footprintDist = 0;
+      footstepSound();
       smoke.push({
         x: player.x,
         y: player.y + 2,
@@ -339,6 +340,18 @@ function gunSound(s){
   const og=audioCtx.createGain(); og.gain.setValueAtTime(s.sub,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
   osc.connect(og); og.connect(audioCtx.destination);
   osc.start(t); osc.stop(t+0.05);
+}
+function footstepSound(){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  const len=0.03, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.12));
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.03,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(300,t);
+  src.connect(lp); lp.connect(gain); gain.connect(audioCtx.destination);
+  src.start(t); src.stop(t+len);
 }
 function shoot(){
   const w = WEAPONS[gun];
