@@ -128,6 +128,19 @@ function playerOverlapsBridge(px, py, L){
       if(bridgeActive(overAt(c,r), L)) return true;
   return false;
 }
+
+function spriteOverlapsBridge(px, py, L){
+  // Check if a SPR x SPR sprite centered at (px, py) overlaps any bridge cell
+  const half=SPR/2;
+  const top=py-half, bot=py+half;
+  const left=px-half, right=px+half;
+  const c0=Math.floor(left/MTILE),  c1=Math.floor((right-0.001)/MTILE);
+  const r0=Math.floor(top/MTILE),   r1=Math.floor((bot-0.001)/MTILE);
+  for(let r=r0; r<=r1; r++)
+    for(let c=c0; c<=c1; c++)
+      if(bridgeActive(overAt(c,r), L)) return true;
+  return false;
+}
 function playerOverlapsSombra(px, py){
   // Any part of the player's sprite touching a sombra cell?
   const half=SPR/2;
@@ -246,7 +259,11 @@ function step(dt){
   // ── Shooting (cadência/auto por arma) ──
   const w = WEAPONS[gun];
   fireCooldown = Math.max(0, fireCooldown - dt);
-  if(mouse.down && fireCooldown <= 0 && state==='playing' && (w.auto || !fireLatch)){
+  // Arma tocando ponte? Trava o disparo (não o corpo do player)
+  const aimAng = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+  const wpd = SPR*0.35 - recoilForce;
+  const weaponOnBridge = spriteOverlapsBridge(player.x + Math.cos(aimAng)*wpd, player.y-6 + Math.sin(aimAng)*wpd, player.L);
+  if(mouse.down && fireCooldown <= 0 && state=="playing" && !weaponOnBridge && (w.auto || !fireLatch)){
     fireCooldown = w.rate;
     fireLatch = true;
     shoot();
@@ -256,8 +273,8 @@ function step(dt){
   // Decay juice
   recoilForce += (0 - recoilForce) * Math.min(1, dt*18);
   shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
-  for(const b of bullets){ b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt; }
-  // Spawn impact sparks at the exact crosshair target for expired bullets
+  for(const b of bullets) bulletStep(b, dt);
+  // Spawn impact sparks at bullet collision point or max-range target
   for(const b of bullets){ if(b.life<=0) spawnSparks(b.tx, b.ty); }
   bullets = bullets.filter(b => b.life > 0);
   for(const h of hits){ h.life -= dt; }
@@ -313,15 +330,13 @@ function shoot(){
   for(let p=0;p<w.pellets;p++){
     const a = angle + (Math.random()*2-1)*w.spread;          // spread por projétil
     const txw = gx + Math.cos(a)*aimDist, tyw = gy + Math.sin(a)*aimDist;
-    const hit = raycast(gx, gy, txw, tyw, player.L);         // paredes/andares param a bala
-    const dist = Math.hypot(hit.x - gx, hit.y - gy);
     bullets.push({
       x: gx, y: gy,
       vx: Math.cos(a)*bulletSpeed,
       vy: Math.sin(a)*bulletSpeed,
-      tx: hit.x, ty: hit.y,
+      tx: txw, ty: tyw,
       level: player.L,
-      life: dist/bulletSpeed
+      life: aimDist/bulletSpeed
     });
   }
 }
@@ -378,6 +393,34 @@ function spawnSparks(x, y){
     });
   }
 }
+// ── Arma: sem colisão, atravessa tudo (a ponte só barra o disparo e cobre visualmente) ──
+function weaponDist(px, py, angle, maxDist){
+  return maxDist;
+}
+
+// ── Colisão per-frame das balas: atravessa tudo, só para em pontes e bordas ──
+function bulletStep(b, dt){
+  if(b.life <= 0) return;
+
+  const prevX = b.x, prevY = b.y;
+  b.x += b.vx * dt;
+  b.y += b.vy * dt;
+  b.life -= dt;
+
+  if(b.life <= 0){
+    b.tx = b.x; b.ty = b.y;                             // faísca na posição atual
+    return;
+  }
+
+  // Borda do mapa — único freio da bala
+  const cx = Math.floor(b.x / MTILE), cy = Math.floor(b.y / MTILE);
+  if(cx < 0 || cy < 0 || cx >= COLS || cy >= ROWS){
+    b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
+  }
+
+  // Ponte cobre visualmente (3d) mas não barra — a trava é no disparo
+}
+
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 
 function findSpawn(){
@@ -434,91 +477,126 @@ function draw(){
     }
   }
 
-  // 2) player (sombra + mascote 24px, ancorado nos pés)
-  ctx.fillStyle='rgba(0,0,0,0.28)';
-  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
-  if(IMG.players){
-    ctx.save(); ctx.translate(player.x, player.y-6);
-    if(player.flip) ctx.scale(-1,1);
-    ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
-    ctx.restore();
-    // Arma na mão: sprite da arma ATUAL, com recuo + muzzle flash
-    if(IMG.weapons){
-      const wDef = WEAPONS[gun];
-      const aimAngle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
-      const recoilOff = recoilForce;  // kicks back along aim line
-      const wpDist = SPR*0.35 - recoilOff;
-      const wx = player.x + Math.cos(aimAngle)*wpDist;
-      const wy = player.y-6 + Math.sin(aimAngle)*wpDist;
-      ctx.save();
-      ctx.translate(wx, wy);
-      ctx.rotate(aimAngle);
-      if(Math.abs(aimAngle) > Math.PI/2) ctx.scale(1, -1);
-      ctx.drawImage(IMG.weapons, wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
-      ctx.restore();
-      // muzzle flash — tamanho por arma, na ponta do cano
-      if(flashT > 0){
-        const fs = wDef.flash * 6;
-        const fx = player.x + Math.cos(flashAng)*(wpDist + SPR*0.5);
-        const fy = player.y-6 + Math.sin(flashAng)*(wpDist + SPR*0.5);
-        ctx.save(); ctx.translate(fx, fy); ctx.rotate(flashAng);
-        ctx.globalAlpha = Math.min(1, flashT/0.05);
-        ctx.fillStyle='#ffd97a';
-        ctx.beginPath();
-        ctx.moveTo(fs*1.6, 0); ctx.lineTo(fs*0.35, fs*0.5); ctx.lineTo(-fs*0.2, 0); ctx.lineTo(fs*0.35, -fs*0.5);
-        ctx.closePath(); ctx.fill();
-        ctx.fillStyle='#fff6d8';
-        ctx.beginPath(); ctx.arc(fs*0.25, 0, fs*0.32, 0, 6.28); ctx.fill();
-        ctx.restore(); ctx.globalAlpha=1;
-      }
-    }
-  }
+	  // 2) player (sombra + mascote 24px, ancorado nos pés)
+	  ctx.fillStyle='rgba(0,0,0,0.28)';
+	  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
+	  if(IMG.players){
+	    ctx.save(); ctx.translate(player.x, player.y-6);
+	    if(player.flip) ctx.scale(-1,1);
+	    ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	    ctx.restore();
+	  }
 
-  // 2.5) Balas e sparks (antes da oclusão — pontes/estruturas cobrem quando no mesmo nível)
-  for(const b of bullets){
-    ctx.fillStyle='#2a2218';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
-    ctx.fillStyle='#f0e8d8';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
-  }
-  for(const h of hits){
-    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
-    const alpha = h.life/0.25;
-    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
-    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
-  }
+	  // ── Oclusão / Arma / Balas ──
+	  const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
+	  const naEscada = !!(pci && pci.kind==='escada');
+	  const onBridge = !naEscada && playerOverlapsBridge(player.x, player.y, player.L);
+	  const onSombra = playerOverlapsSombra(player.x, player.y);
+	  window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge; window.__onSombra=onSombra;
+	  // Arma tocando ponte? (usado pra ordem de renderização)
+	  let _weaponOnBridge = false;
+	  if(IMG.players && IMG.weapons){
+	    const _wDef = WEAPONS[gun];
+	    const _aimAngle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+	    const _wpDist = Math.min(SPR*0.35 - recoilForce, weaponDist(player.x, player.y-6, _aimAngle, SPR*0.35));
+	    const _wx = player.x + Math.cos(_aimAngle)*_wpDist;
+	    const _wy = player.y-6 + Math.sin(_aimAngle)*_wpDist;
+	    _weaponOnBridge = spriteOverlapsBridge(_wx, _wy, player.L);
+	  }
 
-  // 3) oclusão por andar + ponte: bloqueios ao redor da ponte viram
-  //    cobertura quando o player pisa nela (efeito de profundidade).
-  const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
-  const naEscada = !!(pci && pci.kind==='escada');
-  // Qualquer parte do asset do player (24px) tocando a ponte ativa o efeito
-  const onBridge = !naEscada && playerOverlapsBridge(player.x, player.y, player.L);
-  const onSombra = playerOverlapsSombra(player.x, player.y);
-  window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge; window.__onSombra=onSombra;
-  if(!naEscada)
-  for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
-    let cover = coversHero(i,player.L);
-    if(!cover && onBridge){
-      const ci=collInfo(coll[i]);
-      if(ci && ci.kind==='block') cover = blockNearBridge(c, r, player.L);
-    }
-    if(!cover && onSombra && sombra[i]) cover = true;
-    if(!cover) continue;
-    for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
-      if(!L.tiles[i]) continue;
-      const a=(typeof L.alpha==='number')?L.alpha:1;
-      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
-      blitMap(L.tiles[i], c*MTILE, r*MTILE);
-      if(a<1) ctx.restore();
-      window.__occ++;
-      break;
-    }
-  }
+	  const _drawWeapon = () => {
+	    const _wDef = WEAPONS[gun];
+	    const _aimAngle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+	    const _wpDist = Math.min(SPR*0.35 - recoilForce, weaponDist(player.x, player.y-6, _aimAngle, SPR*0.35));
+	    const _wx = player.x + Math.cos(_aimAngle)*_wpDist;
+	    const _wy = player.y-6 + Math.sin(_aimAngle)*_wpDist;
+	    ctx.save();
+	    ctx.translate(_wx, _wy);
+	    ctx.rotate(_aimAngle);
+	    if(Math.abs(_aimAngle) > Math.PI/2) ctx.scale(1, -1);
+	    ctx.drawImage(IMG.weapons, _wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	    ctx.restore();
+	    if(flashT > 0){
+	      const fs = _wDef.flash * 6;
+	      const fx = player.x + Math.cos(flashAng)*(_wpDist + SPR*0.5);
+	      const fy = player.y-6 + Math.sin(flashAng)*(_wpDist + SPR*0.5);
+	      ctx.save(); ctx.translate(fx, fy); ctx.rotate(flashAng);
+	      ctx.globalAlpha = Math.min(1, flashT/0.05);
+	      ctx.fillStyle='#ffd97a';
+	      ctx.beginPath();
+	      ctx.moveTo(fs*1.6, 0); ctx.lineTo(fs*0.35, fs*0.5); ctx.lineTo(-fs*0.2, 0); ctx.lineTo(fs*0.35, -fs*0.5);
+	      ctx.closePath(); ctx.fill();
+	      ctx.fillStyle='#fff6d8';
+	      ctx.beginPath(); ctx.arc(fs*0.25, 0, fs*0.32, 0, 6.28); ctx.fill();
+	      ctx.restore(); ctx.globalAlpha=1;
+	    }
+	  };
 
-  // ═══════════ HUD ═══════════
+	  // Se arma toca ponte, renderiza atrás de tudo (antes da oclusão de piso)
+	  if(_weaponOnBridge) _drawWeapon();
+
+	  // 3a) oclusão por piso/escada/sombra (arma e balas ficam na frente disto)
+	  if(!naEscada)
+	  for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
+	    const ci=collInfo(coll[i]);
+	    let cover = false;
+	    if(ci && ci.kind==='piso')   cover = ci.level > player.L;
+	    if(ci && ci.kind==='escada') cover = Math.min(...ci.levels) > player.L;
+	    if(!cover && onSombra && sombra[i]) cover = true;
+	    if(!cover) continue;
+	    for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
+	      if(!L.tiles[i]) continue;
+	      const a=(typeof L.alpha==='number')?L.alpha:1;
+	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
+	      blitMap(L.tiles[i], c*MTILE, r*MTILE);
+	      if(a<1) ctx.restore();
+	      window.__occ++;
+	      break;
+	    }
+	  }
+
+	  // 3b) Arma na mão — na frente dos pisos (se não estiver tocando ponte)
+	  if(!_weaponOnBridge && IMG.players && IMG.weapons) _drawWeapon();
+
+	  // 3c) oclusão por ponte (cobre a arma, balas ficam na frente)
+	  if(!naEscada)
+	  for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
+	    const ov=over[i];
+	    let cover = (ov>0 && (ov-1)>=player.L);
+	    if(!cover && onBridge){
+	      const ci=collInfo(coll[i]);
+	      if(ci && ci.kind==='block') cover = blockNearBridge(c, r, player.L);
+	    }
+	    if(!cover) continue;
+	    for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
+	      if(!L.tiles[i]) continue;
+	      const a=(typeof L.alpha==='number')?L.alpha:1;
+	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
+	      blitMap(L.tiles[i], c*MTILE, r*MTILE);
+	      if(a<1) ctx.restore();
+	      window.__occ++;
+	      break;
+	    }
+	  }
+
+	  
+// 3d) Balas e sparks — na frente de tudo
+	  for(const b of bullets){
+	    ctx.fillStyle='#2a2218';
+	    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
+	    ctx.fillStyle='#f0e8d8';
+	    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+	  }
+	  for(const h of hits){
+	    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
+	    const alpha = h.life/0.25;
+	    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
+	    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
+	    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
+	    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
+	  }
+
+	  // ═══════════ HUD ═══════════
   ctx.setTransform(1,0,0,1,0,0);
 
   // ── Vida (top-left) ──
