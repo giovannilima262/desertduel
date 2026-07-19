@@ -307,9 +307,43 @@ function draw(){
   const c0=Math.max(0,(cam.x/MTILE|0)-1), r0=Math.max(0,(cam.y/MTILE|0)-1);
   const c1=Math.min(COLS,c0+(VW/VIEW_SCALE/MTILE|0)+3), r1=Math.min(ROWS,r0+(VH/VIEW_SCALE/MTILE|0)+3);
 
-  // the authored map: every visible tile layer, bottom → top
-  if(mapLayers) for(const L of mapLayers){ const t=L.tiles;
-    for(let r=r0;r<r1;r++){ const base=r*COLS; for(let c=c0;c<c1;c++){ const tt=t[base+c]; if(tt) blitMap(tt, c*MTILE, r*MTILE); } }
+  // pre-compute: for each mato cell, which layer holds the front sprite to animate
+  const matoTop = {};
+  for(const m of matoCells){
+    const i=m.r*COLS+m.c;
+    if(mapLayers) for(let li=mapLayers.length-1;li>=0;li--){
+      if(mapLayers[li].tiles[i]){ matoTop[i]=li; break; }
+    }
+  }
+
+  // the authored map: every visible tile layer, bottom → top  (mato animates in its own layer)
+  if(mapLayers){
+    const tileCache = {};
+    for(let li=0; li<mapLayers.length; li++){ const L=mapLayers[li], t=L.tiles;
+      for(let r=r0;r<r1;r++){ const base=r*COLS; for(let c=c0;c<c1;c++){
+        const i=base+c; const tt=t[i]; if(!tt) continue;
+        if(matoTop[i]===li){
+          // ── animated mato (in-layer) ──
+          const ss=MAP_SHEETS[tt[0]]||MAP_SHEETS[0], srcImg=IMG[ss[0]]; if(!srcImg) continue;
+          const ts=ss[1];
+          const key=tt[0]+'_'+tt[1]+'_'+tt[2];
+          let tc=tileCache[key];
+          if(!tc){ tc=document.createElement('canvas'); tc.width=ts; tc.height=ts;
+            const tctx=tc.getContext('2d'); tctx.imageSmoothingEnabled=false;
+            tctx.drawImage(srcImg, tt[1]*ts, tt[2]*ts, ts, ts, 0, 0, ts, ts);
+            tileCache[key]=tc; }
+          const ph=c*0.6+r*0.9;
+          const rot=Math.sin(elapsed*2.0+ph)*0.06;
+          ctx.save();
+          ctx.translate(c*MTILE+MTILE/2, r*MTILE+MTILE);
+          ctx.rotate(rot);
+          ctx.drawImage(tc, 0, 0, ts, ts, -MTILE/2, -MTILE, MTILE, MTILE);
+          ctx.restore();
+        } else {
+          blitMap(tt, c*MTILE, r*MTILE);
+        }
+      }}
+    }
   }
 
   // world border
@@ -339,33 +373,6 @@ function draw(){
     ctx.fillStyle='rgba(0,0,0,.5)'; ctx.fillRect(bx-1,by-1,bw+2,5);
     ctx.fillStyle=f.isPlayer?'#5fd35f':'#e0533a'; ctx.fillRect(bx,by,bw*clamp(f.hp/100,0,1),3);
     if(!f.isPlayer){ ctx.fillStyle='#3a2a1c'; ctx.font='7px system-ui'; ctx.textAlign='center'; ctx.fillText(f.name,f.x,by-3); }
-  }
-
-  // ── mato / bushes ── rendered ABOVE fighters with wind-sway "juice" animation
-  if(matoCells.length){
-    for(const m of matoCells){
-      const mx=m.c*MTILE+MTILE/2, my=m.r*MTILE+MTILE/2;
-      // unique phase per cell from position hash — looks like wind moving through
-      const ph=m.c*0.6+m.r*0.9;
-      const swayX=Math.sin(elapsed*2.2+ph)*2.2;
-      const swayY=Math.cos(elapsed*1.7+ph+1.2)*1.0;
-      const rot=Math.sin(elapsed*1.9+ph)*0.07;
-      // variant: pick different bush/plant sprite based on position
-      const v=((m.c*17+m.r*11)&3);
-      const bushCol=[2,1,0,1][v];   // several plant columns on row 1
-      const bushRow=1;
-      // ground shadow
-      ctx.fillStyle='rgba(0,0,0,.15)'; ctx.beginPath();
-      ctx.ellipse(mx+swayX, my+10, 6, 2.5, 0, 0, 6.28); ctx.fill();
-      // bush sprite
-      ctx.save();
-      ctx.translate(mx+swayX, my+swayY+2);
-      ctx.rotate(rot);
-      ctx.drawImage(IMG.tiles,
-        bushCol*16, bushRow*16, 16, 16,
-        -MTILE/2, -MTILE, MTILE, MTILE);
-      ctx.restore();
-    }
   }
 
   // bullets

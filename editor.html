@@ -359,11 +359,49 @@ function renderMap(){
   const sc=$('stage');
   const vc0=Math.max(0,(sc.scrollLeft/cell|0)-1), vr0=Math.max(0,(sc.scrollTop/cell|0)-1);
   const vc1=Math.min(cols,vc0+(sc.clientWidth/cell|0)+3), vr1=Math.min(rows,vr0+(sc.clientHeight/cell|0)+3);
-  for(const L of layers){                     // bottom → top; layer order decides what covers what
+
+  // pre-compute: for each mato cell, which layer holds the front sprite to animate
+  const matoTop = {};
+  for(let i=0;i<mato.length;i++){
+    if(!mato[i]) continue;
+    for(let li=layers.length-1;li>=0;li--){
+      const L=layers[li];
+      if(!L.visible||L.type==='image'||!L.tiles[i]) continue;
+      matoTop[i]=li; break;
+    }
+  }
+
+  const now = performance.now() / 1000;
+  const tileCache = {};
+  for(let li=0; li<layers.length; li++){   // bottom → top
+    const L=layers[li];
     if(!L.visible) continue;
     if(L.type==='image'){ drawImageLayer(L); continue; }
     mapCtx.save(); mapCtx.globalAlpha = (typeof L.alpha==='number') ? L.alpha : 1;
-    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++) drawTileTo(mapCtx, L.tiles[idx(c,r)], c*cell, r*cell, cell);
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){
+      const i=idx(c,r);
+      const tref=L.tiles[i]; if(!tref) continue;
+      if(matoTop[i]===li){
+        // ── animated mato (in-layer, not a separate pass) ──
+        const srcImg=IMG[tref.sh]; if(!srcImg) continue;
+        const TL=TS(tref.sh);
+        const key=tref.sh+'_'+tref.c+'_'+tref.r;
+        let tc=tileCache[key];
+        if(!tc){ tc=document.createElement('canvas'); tc.width=TL; tc.height=TL;
+          const tctx=tc.getContext('2d'); tctx.imageSmoothingEnabled=false;
+          tctx.drawImage(srcImg, tref.c*TL, tref.r*TL, TL, TL, 0, 0, TL, TL);
+          tileCache[key]=tc; }
+        const ph=c*0.6+r*0.9;
+        const rot=Math.sin(now*2.0+ph)*0.06;
+        mapCtx.save();
+        mapCtx.translate(c*cell+cell/2, r*cell+cell);
+        mapCtx.rotate(rot);
+        mapCtx.drawImage(tc, 0, 0, TL, TL, -cell/2, -cell, cell, cell);
+        mapCtx.restore();
+      } else {
+        drawTileTo(mapCtx, tref, c*cell, r*cell, cell);
+      }
+    }
     mapCtx.restore();
   }
   if(showColl || testMode){
@@ -377,13 +415,6 @@ function renderMap(){
       mapCtx.globalAlpha=a; mapCtx.fillStyle=info.color; mapCtx.fillRect(c*cell,r*cell,cell,cell);
       if(lblOn && info.label){ mapCtx.globalAlpha=Math.min(1,a+0.3); mapCtx.fillStyle='rgba(20,15,25,0.8)';
         mapCtx.fillText(info.label, c*cell+cell/2, r*cell+cell/2); }
-      mapCtx.globalAlpha=1;
-    }
-    // mato (decorative bush): green overlay, independent of coll[]
-    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ if(!mato[idx(c,r)]) continue;
-      mapCtx.globalAlpha=0.5; mapCtx.fillStyle='rgba(100,210,80,0.45)'; mapCtx.fillRect(c*cell,r*cell,cell,cell);
-      if(lblOn){ mapCtx.globalAlpha=0.8; mapCtx.fillStyle='rgba(20,15,25,0.8)';
-        mapCtx.fillText('🌿', c*cell+cell/2, r*cell+cell/2); }
       mapCtx.globalAlpha=1;
     }
     // ponte (occlusion): diagonal hatching coloured by the level it's bound to; drawn over the coll colour so both show
