@@ -604,6 +604,17 @@ function draw(){
     ctx.arc(s.x+2, s.y, MTILE*0.08, 0, 6.28);
     ctx.fill();
   }
+  // 1.9) baús — sempre atrás do player
+  if(IMG.tiles){
+    const tNow2 = performance.now()/1000;
+    for(const b of chests){
+      if(b.c<c0-1||b.c>=c1||b.r<r0-1||b.r>=r1) continue;
+      const v=CHEST_TILES[b.v];
+      const sp=(b.st==='open')?v.open:v.closed;
+      ctx.drawImage(IMG.tiles, sp[0]*16, sp[1]*16, 16, 16, b.c*MTILE, b.r*MTILE, MTILE, MTILE);
+    }
+  }
+
   // 2) player (sombra + mascote 24px, ancorado nos pés)
 	  ctx.fillStyle='rgba(0,0,0,0.28)';
 	  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
@@ -717,15 +728,8 @@ function draw(){
       ctx.beginPath();
       ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + p*Math.PI*2);
       ctx.stroke();
-      // porcentagem no centro
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 7px system-ui';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(Math.round(p*100)+'%', cx, cy);
       ctx.restore();
     }
-    const sp=(b.st==='open')?v.open:v.closed;
-    ctx.drawImage(IMG.tiles, sp[0]*16, sp[1]*16, 16, 16, b.c*MTILE, b.r*MTILE, MTILE, MTILE);
     if(IMG.weapons) for(const f of b.loot){
       const k=Math.min(1, f.t0/f.dur);
       const fx=f.x0+(f.x1-f.x0)*k, fy=f.y0+(f.y1-f.y0)*k - Math.sin(Math.PI*k)*12;
@@ -737,21 +741,11 @@ function draw(){
   };
 
   const tNow = performance.now()/1000;
-  // 3a.6) baús ATRÁS do player (player ao sul do baú → asset fica embaixo)
+  // 3a.6) baús — sempre atrás de tudo
   if(IMG.tiles){
     for(const b of chests){
       if(b.c<c0-1||b.c>=c1||b.r<r0-1||b.r>=r1) continue;
-      if(player.y >= b.r*MTILE + MTILE) _drawChest(b);       // sul = baú atrás do player
-    }
-  }
-
-	  
-
-	  // 3a.7) baús NA FRENTE do player (player ao norte → baú na frente)
-  if(IMG.tiles){
-    for(const b of chests){
-      if(b.c<c0-1||b.c>=c1||b.r<r0-1||b.r>=r1) continue;
-      if(player.y < b.r*MTILE + MTILE) _drawChest(b);        // norte = baú na frente
+      _drawChest(b);
     }
   }
 
