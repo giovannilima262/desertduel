@@ -597,7 +597,23 @@ function draw(){
 	    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
 	  }
 
-	  // ═══════════ HUD ═══════════
+	  // ── Seta acima do player (na frente de tudo) ──
+  const ax = player.x, ay = player.y - SPR*0.7;
+  const s = MTILE*0.16;
+  const bob = Math.sin(performance.now()/1000*3) * 1.5;
+  ctx.fillStyle='#4c3';
+  ctx.strokeStyle='#1a3a10';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay + s + bob);          // ponta (baixo)
+  ctx.lineTo(ax - s, ay - s*0.5 + bob);  // topo esquerdo
+  ctx.lineTo(ax + s, ay - s*0.5 + bob);  // topo direito
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+
+  // ═══════════ HUD ═══════════
   ctx.setTransform(1,0,0,1,0,0);
 
   // ── Vida (top-left) ──
@@ -607,7 +623,7 @@ function draw(){
   ctx.fillStyle='rgba(18,13,9,.82)';
   roundRect(hx, hy, bw+12, bh+18, br); ctx.fill();
   ctx.strokeStyle='rgba(200,160,110,.25)'; ctx.lineWidth=1;
-  roundRect(hx, hy, bw+12, bh+18, br); ctx.stroke();
+  roundRect(hx, hy, bw+12, bh+18, br); 
   // Heart icon
   ctx.fillStyle='#d4453a'; ctx.font='15px system-ui';
   ctx.fillText('♥', hx+8, hy+20);
@@ -637,10 +653,10 @@ function draw(){
   ctx.fillStyle='rgba(18,13,9,.82)';
   roundRect(wX, wY, wW, wH, 12); ctx.fill();
   ctx.strokeStyle='rgba(200,160,110,.35)'; ctx.lineWidth=1.5;
-  roundRect(wX, wY, wW, wH, 12); ctx.stroke();
+  roundRect(wX, wY, wW, wH, 12); 
   // Top accent line
   ctx.strokeStyle='rgba(244,201,93,.5)'; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(wX+16, wY); ctx.lineTo(wX+wW-16, wY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(wX+16, wY); ctx.lineTo(wX+wW-16, wY); 
   // Weapon sprite + nome (arma atual)
   if(IMG.weapons){
     ctx.drawImage(IMG.weapons, WEAPONS[gun].spr*SPR,0, SPR,SPR, wX+wW/2-18, wY+6, 36,36);
