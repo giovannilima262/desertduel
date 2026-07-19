@@ -158,6 +158,24 @@ const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:fal
 const keys={};
 addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; });
 addEventListener('keyup',  e=>{ keys[e.key.toLowerCase()]=false; });
+// Mouse tracking: canvas-relative pos + world pos (for weapon aim)
+const mouse = { sx:0, sy:0, wx:0, wy:0, down:false };
+canvas.addEventListener('mousemove',e=>{
+  const r=canvas.getBoundingClientRect();
+  mouse.sx=(e.clientX-r.left)*(canvas.width/r.width);
+  mouse.sy=(e.clientY-r.top)*(canvas.height/r.height);
+});
+canvas.addEventListener('mousedown',()=>{ mouse.down=true; });
+canvas.addEventListener('mouseup',()=>{ mouse.down=false; });
+// Cursor hidden during gameplay (custom crosshair); shown on menu
+
+// Shooting juice state
+let recoilForce = 0;        // current recoil offset (decays)
+let bullets = [];           // projectiles: {x,y,vx,vy,life}
+let hits = [];              // impact sparks at target
+let shakePhase = 0;          // screen shake damped oscillation
+const FIRE_RATE = 0.18;     // seconds between shots
+let fireCooldown = 0;       // time until next shot allowed
 
 function moveAxis(nx,ny,horiz){
   const cc={c:Math.floor(player.x/MTILE), r:Math.floor(player.y/MTILE)};
@@ -184,9 +202,89 @@ function step(dt){
     moveAxis(player.x, player.y+dy/l*s, false);
   }
   player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0; // frame 3 = morte, skip
+
+  // ── Shooting ──
+  fireCooldown = Math.max(0, fireCooldown - dt);
+  if(mouse.down && fireCooldown <= 0 && state==='playing'){
+    fireCooldown = FIRE_RATE;
+    shoot();
+  }
+  // Decay juice
+  recoilForce += (0 - recoilForce) * Math.min(1, dt*18);
+  shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
+  for(const b of bullets){ b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt; }
+  // Spawn impact sparks at the exact crosshair target for expired bullets
+  for(const b of bullets){ if(b.life<=0) spawnSparks(b.tx, b.ty); }
+  bullets = bullets.filter(b => b.life > 0);
+  for(const h of hits){ h.life -= dt; }
+  hits = hits.filter(h => h.life > 0);
+
+  // Camera (with damped oscillation screen shake)
+  const shakeX = Math.sin(shakePhase*55)*shakePhase*1.5;
+  const shakeY = Math.cos(shakePhase*67)*shakePhase*1;
   const tx=clamp(player.x-(VW/VIEW_SCALE)/2, 0, Math.max(0,WORLD_W-VW/VIEW_SCALE));
   const ty=clamp(player.y-(VH/VIEW_SCALE)/2, 0, Math.max(0,WORLD_H-VH/VIEW_SCALE));
   cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
+  cam.x += shakeX; cam.y += shakeY;  // direct offset, returns to 0 naturally
+}
+
+function shoot(){
+  recoilForce = 5;
+  shakePhase = 1;
+  const angle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+  const gx = player.x + Math.cos(angle)*SPR*0.45;
+  const gy = player.y-6 + Math.sin(angle)*SPR*0.45;
+  // Raycast: find where the bullet actually hits (wall, different floor, etc.)
+  const hit = raycast(gx, gy, mouse.wx, mouse.wy, player.L);
+  const dist = Math.hypot(hit.x - gx, hit.y - gy);
+  const bulletSpeed = MTILE*35;
+  bullets.push({
+    x: gx, y: gy,
+    vx: Math.cos(angle)*bulletSpeed,
+    vy: Math.sin(angle)*bulletSpeed,
+    tx: hit.x, ty: hit.y,
+    life: dist/bulletSpeed
+  });
+}
+
+// Raycast: step through cells from (x1,y1) to (x2,y2), stop at first blocking cell.
+// Returns the world-position hit point. A cell blocks if the player can't walk there.
+function raycast(x1, y1, x2, y2, L){
+  const dx=x2-x1, dy=y2-y1;
+  const steps = Math.ceil(Math.hypot(dx, dy) / (MTILE*0.5)); // half-tile steps
+  for(let i=1; i<=steps; i++){
+    const t = i/steps;
+    const cx = Math.floor((x1 + dx*t)/MTILE);
+    const cy = Math.floor((y1 + dy*t)/MTILE);
+    if(blocksBullet(cx, cy, L)){
+      // Back up to edge of blocking cell
+      return { x: x1 + dx*(i-1)/steps, y: y1 + dy*(i-1)/steps };
+    }
+  }
+  return { x: x2, y: y2 }; // no wall hit, reach crosshair
+}
+function blocksBullet(c, r, L){
+  if(c<0||r<0||c>=COLS||r>=ROWS) return true;            // map edge
+  const v=collAt(c,r);
+  if(v===1) return true;                                   // block wall
+  const ci=collInfo(v);
+  if(!ci) return !bridgeActive(overAt(c,r), L);           // empty: pass only if bridge at this level
+  if(ci.kind==='block') return true;
+  if(ci.kind==='spawn') return L!==0;                     // pass only if on level 0
+  if(ci.kind==='piso') return ci.level!==L;               // pass only if same floor
+  if(ci.kind==='escada') return !ci.levels.includes(L);   // pass only if reachable
+  return true;                                              // unknown = block
+}
+function spawnSparks(x, y){
+  for(let i=0;i<4;i++){
+    const a = Math.random()*6.28;
+    const spd = MTILE*(3+Math.random()*6);
+    hits.push({
+      x, y,
+      vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
+      life: 0.12+Math.random()*0.08
+    });
+  }
 }
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 
@@ -202,6 +300,10 @@ function draw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#c99a63'; ctx.fillRect(0,0,VW,VH);
   ctx.setTransform(VIEW_SCALE,0,0,VIEW_SCALE, -cam.x*VIEW_SCALE|0, -cam.y*VIEW_SCALE|0);
+
+  // Update mouse world pos each frame (camera moves smoothly)
+  mouse.wx = mouse.sx/VIEW_SCALE + cam.x;
+  mouse.wy = mouse.sy/VIEW_SCALE + cam.y;
 
   const c0=Math.max(0,(cam.x/MTILE|0)-1), r0=Math.max(0,(cam.y/MTILE|0)-1);
   const c1=Math.min(COLS,c0+(VW/VIEW_SCALE/MTILE|0)+3), r1=Math.min(ROWS,r0+(VH/VIEW_SCALE/MTILE|0)+3);
@@ -235,6 +337,39 @@ function draw(){
     if(player.flip) ctx.scale(-1,1);
     ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
     ctx.restore();
+    // Weapon: tile [0,0] from weapons sheet, with recoil + muzzle flash
+    if(IMG.weapons){
+      const aimAngle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+      const recoilOff = recoilForce;  // kicks back along aim line
+      const wpDist = SPR*0.35 - recoilOff;
+      const wx = player.x + Math.cos(aimAngle)*wpDist;
+      const wy = player.y-6 + Math.sin(aimAngle)*wpDist;
+      ctx.save();
+      ctx.translate(wx, wy);
+      ctx.rotate(aimAngle);
+      if(Math.abs(aimAngle) > Math.PI/2) ctx.scale(1, -1);
+      ctx.drawImage(IMG.weapons, 0*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+      ctx.restore();
+    }
+  }
+
+  // 2.5) Bullet projectiles (custom drawn circles)
+  for(const b of bullets){
+    ctx.fillStyle='#1a1410';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 2.5, 0, 6.28); ctx.fill();
+    ctx.fillStyle='#ffe875';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 1.8, 0, 6.28); ctx.fill();
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+  }
+  // Impact sparks (when bullet hits something or expires)
+  for(const h of hits){
+    const alpha = h.life/0.15;
+    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
+    ctx.fillStyle=`rgba(255,200,60,${alpha})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${alpha})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
   }
 
   // 3) oclusão por andar + ponte: bloqueios ao redor da ponte viram
@@ -271,6 +406,11 @@ function draw(){
   roundRect(16,14,132,34,8); ctx.fill();
   ctx.fillStyle='#f4c95d'; ctx.font='bold 16px system-ui'; ctx.textAlign='left';
   ctx.fillText('Nível '+player.L, 28, 37);
+  // Custom crosshair: tile [5,3] from weapons sheet, at mouse pos
+  if(IMG.weapons){
+    const cs=SPR*2;  // crosshair size (48px)
+    ctx.drawImage(IMG.weapons, 5*SPR, 3*SPR, SPR, SPR, mouse.sx-cs/2, mouse.sy-cs/2, cs, cs);
+  }
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
@@ -292,6 +432,7 @@ function start(){
   cam.x=clamp(player.x-(VW/VIEW_SCALE)/2,0,Math.max(0,WORLD_W-VW/VIEW_SCALE));
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE));
   overlay.classList.add('hidden');
+  canvas.style.cursor='none';  // custom crosshair
   state='playing'; last=performance.now();
 }
 startBtn.addEventListener('click', start);
