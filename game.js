@@ -396,7 +396,8 @@ function shoot(){
       vy: Math.sin(a)*bulletSpeed,
       tx: txw, ty: tyw,
       level: player.L,
-      life: aimDist/bulletSpeed
+      life: aimDist/bulletSpeed,
+      w: gun
     });
   }
 }
@@ -661,11 +662,29 @@ function draw(){
 
 	  
 // 3d) Balas e sparks — na frente de tudo
-	  for(const b of bullets){
-	    ctx.fillStyle='#2a2218';
-	    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
-	    ctx.fillStyle='#f0e8d8';
-	    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+	  if(IMG.interface){
+	    for(const b of bullets){
+	      const ang = Math.atan2(b.vy, b.vx);
+	      const isShotgun = b.w === 'escopeta';
+	      // Ambas usam a bala amarela (4,3). Escopeta com pellet menor.
+	      const tileCol = 4;
+	      const tileRow = 3;
+	      const bs = isShotgun ? MTILE * 0.3 : MTILE * 0.5;  // pellet miúdo vs bala normal
+	      ctx.save();
+	      ctx.translate(b.x, b.y);
+	      ctx.rotate(ang + Math.PI/2);  // ponta da bala aponta na direção do voo
+	      if(!isShotgun) ctx.scale(0.7, 1.3);  // bala fina e alongada
+	      ctx.drawImage(IMG.interface, tileCol*16, tileRow*16, 16, 16, -bs/2, -bs/2, bs, bs);
+	      ctx.restore();
+	    }
+	  } else {
+	    // Fallback: simple circles
+	    for(const b of bullets){
+	      ctx.fillStyle='#2a2218';
+	      ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
+	      ctx.fillStyle='#f0e8d8';
+	      ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+	    }
 	  }
 	  for(const h of hits){
 	    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
