@@ -99,6 +99,8 @@
     <button id="ckPonte"  class="ck" data-kind="ponte" title="Ligada a um nível: o player daquele andar passa POR TRÁS do mapa aqui. Só funciona no nível escolhido. Não altera os andares.">◫ Ponte</button>
     <button id="ckMato"   class="ck" data-kind="mato" title="Vegetação decorativa — renderiza na frente com animação de vento">🌿 Mato</button>
     <button id="ckSombra" class="ck" data-kind="sombra" title="Sombra — quando o player toca, o asset vai pra frente dele">🌘 Sombra</button>
+    <button id="ckArmas"  class="ck" data-kind="armas" title="Coloca uma arma no cenário — no jogo o player pega ao passar por cima. Botão direito remove.">🔫 Arma</button>
+    <select id="gunSel" style="display:none"></select>
     <span class="lbl" id="lvlLbl">Nível</span>
     <button id="lvlDn">−</button><span id="lvlVal" style="min-width:14px;text-align:center">0</span><button id="lvlUp">+</button>
     <span id="stairCtl" style="display:none">
@@ -229,6 +231,19 @@ let layers = [], active = 0, coll = [];   // layers[]: {name, visible, tiles[]} 
 let over = [];                            // occlusion/ponte flag, PARALLEL to coll (doesn't replace it)
 let mato = [];                            // decorative bush/grass flag, PARALLEL to coll (independent)
 let sombra = [];                          // shadow flag — player touch renders cell on top
+let guns = [];                            // weapon spawns placed on the map: {c,r,t}
+// roster — sprites da linha 0 da folha weapons (24px); stats vivem no game.js
+const GUNS = [
+  {id:'pistola',  nome:'Pistola',  c:0},
+  {id:'magnum',   nome:'Magnum',   c:1},
+  {id:'uzi',      nome:'Uzi',      c:2},
+  {id:'sniper',   nome:'Sniper',   c:3},
+  {id:'carabina', nome:'Carabina', c:4},
+  {id:'fuzil',    nome:'Fuzil',    c:5},
+  {id:'smg',      nome:'SMG',      c:6},
+  {id:'escopeta', nome:'Escopeta', c:7},
+];
+let gunSelId = 'pistola';
 let mode = 'tiles';                       // 'tiles' (paint layers[active]) | 'coll'
 let tool = 'paint';
 let sheet = 'tiles';
@@ -266,11 +281,11 @@ function cloneLayer(L){
     : { ...L, tiles:L.tiles.slice() };
 }
 function snapshot(){
-  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice(), sombra: sombra.slice() };
+  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice(), sombra: sombra.slice(), guns: guns.map(g=>({...g})) };
 }
 function restore(s){
   cols=s.cols; rows=s.rows; active=Math.min(s.active, s.layers.length-1);
-  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice(); sombra = (s.sombra||[]).slice();
+  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice(); sombra = (s.sombra||[]).slice(); guns = (s.guns||[]).map(g=>({...g}));
   $('mCols').value=cols; $('mRows').value=rows;
   setLayer(); renderMap(); save();
 }
@@ -299,6 +314,7 @@ function blankLayers(){
   over = new Array(cols*rows).fill(0);
   mato = new Array(cols*rows).fill(0);
   sombra = new Array(cols*rows).fill(0);
+  guns = [];
 }
 function overAt(c,r){ return (c<0||r<0||c>=cols||r>=rows) ? 0 : over[r*cols+c]; }
 const isImg     = L => !!L && L.type==='image';
@@ -407,6 +423,17 @@ function renderMap(){
       }
     }
     mapCtx.restore();
+  }
+  // armas colocadas no cenário (sempre visíveis — são conteúdo, não overlay)
+  if(IMG.weapons){
+    for(const g of guns){
+      if(g.c<vc0-1||g.c>=vc1||g.r<vr0-1||g.r>=vr1) continue;
+      const w=GUNS.find(x=>x.id===g.t); if(!w) continue;
+      const x=g.c*cell, y=g.r*cell;
+      mapCtx.fillStyle='rgba(0,0,0,0.25)';
+      mapCtx.beginPath(); mapCtx.ellipse(x+cell/2, y+cell*0.82, cell*0.32, cell*0.12, 0, 0, 6.28); mapCtx.fill();
+      mapCtx.drawImage(IMG.weapons, w.c*24, 0, 24, 24, x+cell*0.05, y-cell*0.1, cell*0.9, cell*0.9);
+    }
   }
   if(showColl || testMode){
     const lblOn = cell>=16;
@@ -527,6 +554,10 @@ function applyAt(c,r,erase){
     if(collKind==='ponte') over[i] = erase ? 0 : (collLevel+1);   // ponte bound to a level (stored as level+1); leaves coll[] intact
     else if(collKind==='mato') mato[i] = erase ? 0 : 1;            // mato is independent — doesn't touch coll[]
     else if(collKind==='sombra') sombra[i] = erase ? 0 : 1;        // sombra is independent too
+    else if(collKind==='armas'){                                   // one gun per cell; independent of coll[]
+      guns = guns.filter(g=>!(g.c===c&&g.r===r));
+      if(!erase && tool!=='erase') guns.push({c,r,t:gunSelId});
+    }
     else coll[i] = erase ? 0 : collValue();
     return;
   }
@@ -538,6 +569,7 @@ function applyAt(c,r,erase){
 function floodFill(c,r){
   const i=idx(c,r);
   if(mode==='coll'){
+    if(collKind==='armas') return;                 // balde não espalha armas
     let arr, repl;
     if(collKind==='ponte'){ arr=over; repl=collLevel+1; }
     else if(collKind==='mato'){ arr=mato; repl=1; }
@@ -696,8 +728,10 @@ function deleteSel(allLayers){
         if(L.tiles[i]){ L.tiles[i]=null; cleared++; }
       }
       if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
+      const gl=guns.length; guns=guns.filter(g=>!(g.c===c&&g.r===r)); cleared+=gl-guns.length;
     } else if(mode==='coll'){
       if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
+      const gl=guns.length; guns=guns.filter(g=>!(g.c===c&&g.r===r)); cleared+=gl-guns.length;
     } else {
       const L=layers[active];
       if(L.type!=='tiles'){ continue; }
@@ -930,11 +964,12 @@ window.__cellPx=()=>cell;
 function refreshCollUI(){
   document.querySelectorAll('#collGroup .ck').forEach(b=>b.classList.toggle('on', b.dataset.kind===collKind));
   const isPiso = collKind==='piso', isEsc = collKind==='escada', isPonte = collKind==='ponte';
-  const isMato = collKind==='mato';
+  const isMato = collKind==='mato', isArmas = collKind==='armas';
   const showLvl = isPiso || isPonte;                      // ponte também escolhe o nível a que se liga
   $('lvlLbl').style.display = showLvl?'':'none'; $('lvlLbl').textContent = isPonte?'Liga ao nível':'Nível';
   $('lvlDn').style.display = $('lvlUp').style.display = $('lvlVal').style.display = showLvl?'':'none';
   $('stairCtl').style.display = isEsc?'':'none';
+  $('gunSel').style.display = isArmas?'':'none';
   $('lvlVal').textContent = collLevel; $('lvlVal').style.color = floorColor(collLevel,1);
   $('saVal').textContent = collStairLo; $('saVal').style.color = floorColor(collStairLo,1);
   $('sbVal').textContent = collStairHi; $('sbVal').style.color = floorColor(collStairHi,1);
@@ -947,6 +982,8 @@ $('saDn').onclick=()=>{ collStairLo=clampLvl(collStairLo-1); refreshCollUI(); };
 $('saUp').onclick=()=>{ collStairLo=clampLvl(collStairLo+1); refreshCollUI(); };
 $('sbDn').onclick=()=>{ collStairHi=clampLvl(collStairHi-1); refreshCollUI(); };
 $('sbUp').onclick=()=>{ collStairHi=clampLvl(collStairHi+1); refreshCollUI(); };
+GUNS.forEach(w=>{ const o=document.createElement('option'); o.value=w.id; o.textContent='🔫 '+w.nome; $('gunSel').appendChild(o); });
+$('gunSel').onchange=e=>{ gunSelId=e.target.value; };
 refreshCollUI();
 
 $('zoomIn').onclick =()=>{ cell=Math.min(48,cell+3); renderMap(); };
@@ -974,6 +1011,7 @@ $('resizeBtn').onclick=()=>{
     mato[idx(c,r)] = om[r*ocols+c];
     sombra[idx(c,r)] = osb[r*ocols+c];
   }
+  guns = guns.filter(g=>g.c<cols && g.r<rows);
   setLayer(); renderMap(); save();
 };
 $('clearBtn').onclick=()=>{ if(confirm('Limpar todo o mapa?\n(dá pra desfazer com Ctrl+Z)')){
@@ -1027,7 +1065,7 @@ function serialize(){
       ? { type:'image', name:L.name, visible:L.visible, locked:L.locked, src:L.src,
           gx:L.gx, gy:L.gy, cellsW:L.cellsW, baseW:L.baseW, alpha:L.alpha }
       : { type:'tiles', name:L.name, visible:L.visible, locked:L.locked, alpha:L.alpha, tiles:L.tiles.map(enc) }),
-    coll, over, mato, sombra };
+    coll, over, mato, sombra, guns };
 }
 let quotaWarned = false, saveT = null;
 // sliders/wheel fire continuously — debounce so a big image dataURL isn't re-serialised per pixel
@@ -1067,6 +1105,7 @@ function deserialize(d){
   if(d.over) d.over.forEach((v,i)=>{ if(i<over.length) over[i]=v||0; });
   if(d.mato) d.mato.forEach((v,i)=>{ if(i<mato.length) mato[i]=v||0; });
   if(d.sombra) d.sombra.forEach((v,i)=>{ if(i<sombra.length) sombra[i]=v||0; });
+  guns = Array.isArray(d.guns) ? d.guns.filter(g=>g&&inb(g.c,g.r)&&GUNS.some(w=>w.id===g.t)).map(g=>({c:g.c,r:g.r,t:g.t})) : [];
   $('mCols').value=cols; $('mRows').value=rows;
   return true;
 }

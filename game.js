@@ -63,6 +63,7 @@ function loadLevel(){
   over = MAP.over || new Array(COLS*ROWS).fill(0);
   mato = MAP.mato || new Array(COLS*ROWS).fill(0);
   sombra = MAP.sombra || new Array(COLS*ROWS).fill(0);
+  gunItems = (MAP.guns||[]).filter(g=>WEAPONS[g.t]).map(g=>({c:g.c, r:g.r, t:g.t, bob:Math.random()*6.28}));
   matoCache = {};  // fresh tile cache for this level
   // Pre-compute topmost layer for mato and sombra cells
   matoTop = {}; sombraTop = {};
@@ -169,12 +170,37 @@ canvas.addEventListener('mousedown',()=>{ mouse.down=true; });
 canvas.addEventListener('mouseup',()=>{ mouse.down=false; });
 // Cursor hidden during gameplay (custom crosshair); shown on menu
 
+// ── ARMAS: cada uma com seu próprio recuo, cadência, spread, som e flash ──
+// spr = coluna na linha 0 da folha weapons (24px). auto = segurar atira.
+const WEAPONS = {
+  pistola:  { nome:'Pistola',  spr:0, auto:false, rate:0.32, pellets:1, spread:0.020, recoil:2.0, shake:0.7,  speed:35, flash:0.8,
+              snd:{vol:0.09, body:0.10, f1:1800, f2:200, sub:0.06} },
+  magnum:   { nome:'Magnum',   spr:1, auto:false, rate:0.50, pellets:1, spread:0.012, recoil:3.6, shake:1.3,  speed:40, flash:1.1,
+              snd:{vol:0.12, body:0.14, f1:1400, f2:150, sub:0.09} },
+  uzi:      { nome:'Uzi',      spr:2, auto:true,  rate:0.075,pellets:1, spread:0.100, recoil:1.1, shake:0.35, speed:32, flash:0.6,
+              snd:{vol:0.05, body:0.06, f1:2200, f2:400, sub:0.03} },
+  sniper:   { nome:'Sniper',   spr:3, auto:false, rate:1.15, pellets:1, spread:0.000, recoil:5.5, shake:2.0,  speed:55, flash:1.5,
+              snd:{vol:0.16, body:0.28, f1:900,  f2:80,  sub:0.14} },
+  carabina: { nome:'Carabina', spr:4, auto:true,  rate:0.16, pellets:1, spread:0.050, recoil:1.7, shake:0.6,  speed:36, flash:0.8,
+              snd:{vol:0.08, body:0.09, f1:2000, f2:300, sub:0.05} },
+  fuzil:    { nome:'Fuzil',    spr:5, auto:true,  rate:0.125,pellets:1, spread:0.065, recoil:2.2, shake:0.85, speed:38, flash:0.9,
+              snd:{vol:0.09, body:0.11, f1:1700, f2:250, sub:0.07} },
+  smg:      { nome:'SMG',      spr:6, auto:true,  rate:0.09, pellets:1, spread:0.120, recoil:1.0, shake:0.3,  speed:30, flash:0.55,
+              snd:{vol:0.045,body:0.05, f1:2400, f2:500, sub:0.025} },
+  escopeta: { nome:'Escopeta', spr:7, auto:false, rate:0.90, pellets:6, spread:0.220, recoil:4.8, shake:1.7,  speed:30, flash:1.4,
+              snd:{vol:0.14, body:0.20, f1:1100, f2:120, sub:0.12} },
+};
+let gun = 'pistola';        // arma atual do player
+let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
+let overlapGun = -1;        // item sob o player no frame anterior (troca só AO ENTRAR — sem flip-flop parado)
+let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
+let flashT = 0, flashAng = 0;  // muzzle flash
+
 // Shooting juice state
 let recoilForce = 0;        // current recoil offset (decays)
 let bullets = [];           // projectiles: {x,y,vx,vy,life}
 let hits = [];              // impact sparks at target
 let shakePhase = 0;          // screen shake damped oscillation
-const FIRE_RATE = 0.35;     // seconds between shots
 let fireCooldown = 0;       // time until next shot allowed
 
 function moveAxis(nx,ny,horiz){
@@ -203,12 +229,30 @@ function step(dt){
   }
   player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0; // frame 3 = morte, skip
 
-  // ── Shooting ──
+  // ── Pegar arma do chão (troca AO ENTRAR no item; parado em cima não re-troca) ──
+  let curOverlap = -1;
+  for(let gi=0; gi<gunItems.length; gi++){
+    const it=gunItems[gi];
+    const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
+    if(Math.hypot(player.x-gx, player.y-gy) < MTILE*0.6){ curOverlap=gi; break; }
+  }
+  if(curOverlap!==-1 && curOverlap!==overlapGun){
+    const it=gunItems[curOverlap];
+    const old=gun; gun=it.t; it.t=old;                 // swap — a antiga fica no chão
+    fireCooldown=0; fireLatch=false;
+  }
+  overlapGun = curOverlap;
+
+  // ── Shooting (cadência/auto por arma) ──
+  const w = WEAPONS[gun];
   fireCooldown = Math.max(0, fireCooldown - dt);
-  if(mouse.down && fireCooldown <= 0 && state==='playing'){
-    fireCooldown = FIRE_RATE;
+  if(mouse.down && fireCooldown <= 0 && state==='playing' && (w.auto || !fireLatch)){
+    fireCooldown = w.rate;
+    fireLatch = true;
     shoot();
   }
+  if(!mouse.down) fireLatch = false;
+  flashT = Math.max(0, flashT - dt);
   // Decay juice
   recoilForce += (0 - recoilForce) * Math.min(1, dt*18);
   shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
@@ -230,49 +274,56 @@ function step(dt){
 
 // Synth gunshot sound — layered for a punchy pixel-art feel (Web Audio, no files)
 let audioCtx=null;
-function gunSound(){
+function gunSound(s){
+  // s = perfil da arma: {vol, body, f1, f2, sub} — cada arma soa diferente
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   // ── Sharp attack click (firing pin) ──
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(2400,t); clk.frequency.exponentialRampToValueAtTime(600,t+0.01);
-  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.08,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
+  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(s.vol*0.9,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
   clk.connect(cg); cg.connect(audioCtx.destination);
   clk.start(t); clk.stop(t+0.015);
   // ── Noise body (the "bang") ──
-  const len=0.1, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,sr*len|0,sr);
+  const len=s.body, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.12));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
-  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.09,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
-  const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(1800,t); bp.frequency.exponentialRampToValueAtTime(200,t+len);
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(s.vol,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(s.f1,t); bp.frequency.exponentialRampToValueAtTime(s.f2,t+len);
   bp.Q.setValueAtTime(1.2,t);
   src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
   // ── Sub punch ──
   const osc=audioCtx.createOscillator(); osc.type='sine'; osc.frequency.setValueAtTime(90,t); osc.frequency.exponentialRampToValueAtTime(25,t+0.05);
-  const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+  const og=audioCtx.createGain(); og.gain.setValueAtTime(s.sub,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
   osc.connect(og); og.connect(audioCtx.destination);
   osc.start(t); osc.stop(t+0.05);
 }
 function shoot(){
-  recoilForce = 2;
-  shakePhase = 1;
-  gunSound();
+  const w = WEAPONS[gun];
+  recoilForce = w.recoil;
+  shakePhase = w.shake;
+  gunSound(w.snd);
   const angle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+  flashT = 0.05; flashAng = angle;
   const gx = player.x + Math.cos(angle)*SPR*0.45;
   const gy = player.y-6 + Math.sin(angle)*SPR*0.45;
-  // Raycast: track level changes through stairs, stop at walls/wrong floors
-  const hit = raycast(gx, gy, mouse.wx, mouse.wy, player.L);
-  const dist = Math.hypot(hit.x - gx, hit.y - gy);
-  const bulletSpeed = MTILE*35;
-  bullets.push({
-    x: gx, y: gy,
-    vx: Math.cos(angle)*bulletSpeed,
-    vy: Math.sin(angle)*bulletSpeed,
-    tx: hit.x, ty: hit.y,
-    level: player.L,         // starting level
-    life: dist/bulletSpeed
-  });
+  const aimDist = Math.max(MTILE*2, Math.hypot(mouse.wx-gx, mouse.wy-gy));
+  const bulletSpeed = MTILE*w.speed;
+  for(let p=0;p<w.pellets;p++){
+    const a = angle + (Math.random()*2-1)*w.spread;          // spread por projétil
+    const txw = gx + Math.cos(a)*aimDist, tyw = gy + Math.sin(a)*aimDist;
+    const hit = raycast(gx, gy, txw, tyw, player.L);         // paredes/andares param a bala
+    const dist = Math.hypot(hit.x - gx, hit.y - gy);
+    bullets.push({
+      x: gx, y: gy,
+      vx: Math.cos(a)*bulletSpeed,
+      vy: Math.sin(a)*bulletSpeed,
+      tx: hit.x, ty: hit.y,
+      level: player.L,
+      life: dist/bulletSpeed
+    });
+  }
 }
 
 // Raycast: step cell-by-cell from (x1,y1) to (x2,y2), tracking level changes
@@ -370,6 +421,19 @@ function draw(){
     if(a<1) ctx.restore();
   }
 
+  // 1.5) armas no chão (do editor) — sombra + bob
+  if(IMG.weapons){
+    const wNow2 = performance.now()/1000;
+    for(const it of gunItems){
+      if(it.c<c0-1||it.c>=c1||it.r<r0-1||it.r>=r1) continue;
+      const w=WEAPONS[it.t]; if(!w) continue;
+      const gx=it.c*MTILE, gy=it.r*MTILE + Math.sin(wNow2*3+it.bob)*1.5;
+      ctx.fillStyle='rgba(0,0,0,0.25)';
+      ctx.beginPath(); ctx.ellipse(it.c*MTILE+MTILE/2, it.r*MTILE+MTILE*0.85, MTILE*0.34, MTILE*0.13, 0, 0, 6.28); ctx.fill();
+      ctx.drawImage(IMG.weapons, w.spr*SPR, 0, SPR, SPR, gx-(SPR-MTILE)/2, gy-(SPR-MTILE)/2-2, SPR, SPR);
+    }
+  }
+
   // 2) player (sombra + mascote 24px, ancorado nos pés)
   ctx.fillStyle='rgba(0,0,0,0.28)';
   ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
@@ -378,8 +442,9 @@ function draw(){
     if(player.flip) ctx.scale(-1,1);
     ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
     ctx.restore();
-    // Weapon: tile [0,0] from weapons sheet, with recoil + muzzle flash
+    // Arma na mão: sprite da arma ATUAL, com recuo + muzzle flash
     if(IMG.weapons){
+      const wDef = WEAPONS[gun];
       const aimAngle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
       const recoilOff = recoilForce;  // kicks back along aim line
       const wpDist = SPR*0.35 - recoilOff;
@@ -389,8 +454,23 @@ function draw(){
       ctx.translate(wx, wy);
       ctx.rotate(aimAngle);
       if(Math.abs(aimAngle) > Math.PI/2) ctx.scale(1, -1);
-      ctx.drawImage(IMG.weapons, 0*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+      ctx.drawImage(IMG.weapons, wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
       ctx.restore();
+      // muzzle flash — tamanho por arma, na ponta do cano
+      if(flashT > 0){
+        const fs = wDef.flash * 6;
+        const fx = player.x + Math.cos(flashAng)*(wpDist + SPR*0.5);
+        const fy = player.y-6 + Math.sin(flashAng)*(wpDist + SPR*0.5);
+        ctx.save(); ctx.translate(fx, fy); ctx.rotate(flashAng);
+        ctx.globalAlpha = Math.min(1, flashT/0.05);
+        ctx.fillStyle='#ffd97a';
+        ctx.beginPath();
+        ctx.moveTo(fs*1.6, 0); ctx.lineTo(fs*0.35, fs*0.5); ctx.lineTo(-fs*0.2, 0); ctx.lineTo(fs*0.35, -fs*0.5);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle='#fff6d8';
+        ctx.beginPath(); ctx.arc(fs*0.25, 0, fs*0.32, 0, 6.28); ctx.fill();
+        ctx.restore(); ctx.globalAlpha=1;
+      }
     }
   }
 
@@ -482,13 +562,12 @@ function draw(){
   // Top accent line
   ctx.strokeStyle='rgba(244,201,93,.5)'; ctx.lineWidth=2;
   ctx.beginPath(); ctx.moveTo(wX+16, wY); ctx.lineTo(wX+wW-16, wY); ctx.stroke();
-  // Weapon sprite
+  // Weapon sprite + nome (arma atual)
   if(IMG.weapons){
-    ctx.drawImage(IMG.weapons, 0,0, SPR,SPR, wX+wW/2-18, wY+6, 36,36);
+    ctx.drawImage(IMG.weapons, WEAPONS[gun].spr*SPR,0, SPR,SPR, wX+wW/2-18, wY+6, 36,36);
   }
-  // Label
   ctx.fillStyle='#e8d5b5'; ctx.font='bold 9px system-ui'; ctx.textAlign='center';
-  ctx.fillText('PISTOLA', wX+wW/2, wY+wH-9);
+  ctx.fillText(WEAPONS[gun].nome.toUpperCase(), wX+wW/2, wY+wH-9);
 
   // Custom crosshair
   if(IMG.weapons){
@@ -524,7 +603,7 @@ startBtn.addEventListener('click', start);
 //======================= DEBUG (verificação) =======================
 window.DBG=()=>({ state, p:{x:player.x|0,y:player.y|0,L:player.L,
   cc:Math.floor(player.x/MTILE), cr:Math.floor(player.y/MTILE)},
-  cam:{x:cam.x|0,y:cam.y|0}, world:COLS+'x'+ROWS, layers:layers.length, occ:window.__occ|0, naEscada:!!window.__esc });
+  cam:{x:cam.x|0,y:cam.y|0}, world:COLS+'x'+ROWS, layers:layers.length, occ:window.__occ|0, naEscada:!!window.__esc, gun });
 window.__key=(k,d)=>{ keys[k]=d; };
 window.__tick=(n=1,dt=0.016)=>{ if(state!=='playing') return 'not-playing';
   for(let i=0;i<n;i++) step(dt); draw(); return window.DBG(); };
@@ -532,6 +611,10 @@ window.__place=(c,r,L)=>{ player.x=c*MTILE+MTILE/2; player.y=r*MTILE+MTILE/2; pl
   cam.x=clamp(player.x-(VW/VIEW_SCALE)/2,0,Math.max(0,WORLD_W-VW/VIEW_SCALE));
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE)); draw(); };
 window.__coll=(c,r)=>collAt(c,r); window.__over=(c,r)=>overAt(c,r);
+window.__gun=()=>({atual:gun, chao:gunItems.map(g=>g.t+'@'+g.c+','+g.r), balas:bullets.length, cd:+fireCooldown.toFixed(3), recuo:+recoilForce.toFixed(2)});
+window.__spawnGun=(c,r,t)=>{ if(WEAPONS[t]) gunItems.push({c,r,t,bob:0}); return window.__gun(); };
+window.__mouse=(down)=>{ mouse.down=down; };
+window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
 
 //======================= BOOT =======================
 Promise.all([
