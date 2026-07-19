@@ -206,6 +206,7 @@ const WEAPONS = {
 let gun = 'pistola';        // arma atual do player
 let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
 let overlapGun = -1;        // item sob o player no frame anterior (troca só AO ENTRAR — sem flip-flop parado)
+let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
 
@@ -255,12 +256,16 @@ function step(dt){
     const it=gunItems[curOverlap];
     const old=gun; gun=it.t; it.t=old;                 // swap — a antiga fica no chão
     fireCooldown=0; fireLatch=false;
+    pickupSound();
+    // Animação de troca: bounce de escala
+    swapAnim={t:0, total:0.18};
   }
   overlapGun = curOverlap;
 
   // ── Shooting (cadência/auto por arma) ──
   const w = WEAPONS[gun];
   fireCooldown = Math.max(0, fireCooldown - dt);
+  if(swapAnim){ swapAnim.t+=dt; if(swapAnim.t>=swapAnim.total) swapAnim=null; }
   // Arma tocando ponte? Trava o disparo (não o corpo do player)
   const aimAng = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
   const wpd = SPR*0.35 - recoilForce;
@@ -351,6 +356,24 @@ function footstepSound(){
   const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.03,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(300,t);
   src.connect(lp); lp.connect(gain); gain.connect(audioCtx.destination);
+  src.start(t); src.stop(t+len);
+}
+function pickupSound(){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  // Click metálico (armar)
+  const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(800,t); clk.frequency.exponentialRampToValueAtTime(200,t+0.04);
+  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.05,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+  clk.connect(cg); cg.connect(audioCtx.destination);
+  clk.start(t); clk.stop(t+0.05);
+  // Ruído mecânico (corrediça)
+  const len=0.06, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.1));
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.04,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.setValueAtTime(2000,t);
+  src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
 }
 function shoot(){
@@ -553,6 +576,8 @@ function draw(){
 	    ctx.translate(_wx, _wy);
 	    ctx.rotate(_aimAngle);
 	    if(Math.abs(_aimAngle) > Math.PI/2) ctx.scale(1, -1);
+	    // Bounce de escala na troca de arma
+	    if(swapAnim){ const bt=swapAnim.t/swapAnim.total; const bs=1+Math.sin(bt*Math.PI)*0.4*(1-bt); ctx.scale(bs,bs); }
 	    ctx.drawImage(IMG.weapons, _wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	    ctx.restore();
 	    if(flashT > 0){
@@ -608,6 +633,7 @@ function draw(){
   }
 
 	  
+
 	  // 3b) Arma na mão — na frente dos pisos (se não estiver tocando ponte)
 	  if(!_weaponOnBridge && IMG.players && IMG.weapons) _drawWeapon();
 
