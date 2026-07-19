@@ -76,6 +76,19 @@ function blockNearBridge(c,r,L){
   }
   return false;
 }
+function playerOverlapsBridge(px, py, L){
+  // Check all tile cells that the player's sprite (SPR x SPR, anchored at feet px/py-6) covers.
+  // Any part of the 24px sprite touching a bridge cell at level L triggers bridge occlusion.
+  const half=SPR/2;                       // 12 px
+  const top=py-6-half, bot=py-6+half;     // sprite top/bottom in world coords
+  const left=px-half, right=px+half;
+  const c0=Math.floor(left/MTILE),  c1=Math.floor((right-0.001)/MTILE);
+  const r0=Math.floor(top/MTILE),   r1=Math.floor((bot-0.001)/MTILE);
+  for(let r=r0; r<=r1; r++)
+    for(let c=c0; c<=c1; c++)
+      if(bridgeActive(overAt(c,r), L)) return true;
+  return false;
+}
 function canStep(fromVal,L,toVal,toOver){
   const B=collInfo(toVal); if(B && B.kind==='block') return null;
   const A=collInfo(fromVal);
@@ -167,8 +180,8 @@ function draw(){
   //    cobertura quando o player pisa nela (efeito de profundidade).
   const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
   const naEscada = !!(pci && pci.kind==='escada');
-  const pcc=Math.floor(player.x/MTILE), pcr=Math.floor(player.y/MTILE);
-  const onBridge = !naEscada && bridgeActive(overAt(pcc, pcr), player.L);
+  // Qualquer parte do asset do player (24px) tocando a ponte ativa o efeito
+  const onBridge = !naEscada && playerOverlapsBridge(player.x, player.y, player.L);
   window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge;
   if(!naEscada)
   for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
