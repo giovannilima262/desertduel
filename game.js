@@ -713,21 +713,18 @@ function draw(){
   const _drawChest = (b) => {
     const v=CHEST_TILES[b.v];
     const cx = b.c*MTILE+MTILE/2, cy = b.r*MTILE+MTILE/2;
-    // Anel de carregamento preenchendo no sentido horário
+    // Barra de carregamento na parte superior do baú
     if(b.st==='charging'){
       const p = Math.min(1, b.t/CHEST_CHARGE[b.v]);    // progresso 0→1
-      const r = MTILE * 0.65;
+      const bw = MTILE - 2, bh = 3;                    // tamanho da barra
+      const bx = b.c*MTILE + 1, by = b.r*MTILE - 5;    // acima do baú
       ctx.save();
-      // fundo do anel (cinza escuro)
-      ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
-      // preenchimento (dourado)
-      ctx.strokeStyle = CHEST_COLORS[b.v];
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + p*Math.PI*2);
-      ctx.stroke();
+      // fundo da barra (cinza escuro)
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(bx, by, bw, bh);
+      // preenchimento (cor do baú)
+      ctx.fillStyle = CHEST_COLORS[b.v];
+      ctx.fillRect(bx, by, bw * p, bh);
       ctx.restore();
     }
     if(IMG.weapons) for(const f of b.loot){
