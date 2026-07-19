@@ -154,7 +154,7 @@ function canStep(fromVal,L,toVal,toOver){
 }
 
 //======================= PLAYER =======================
-const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false };
+const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100 };
 const keys={};
 addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; });
 addEventListener('keyup',  e=>{ keys[e.key.toLowerCase()]=false; });
@@ -293,12 +293,14 @@ function raycast(x1, y1, x2, y2, startL){
       if(ci&&ci.kind==='block') return {x:lastX,y:lastY,L:curL};
       // Map edge
       if(cx<0||cy<0||cx>=COLS||cy>=ROWS) return {x:lastX,y:lastY,L:curL};
-      // Floor/spawn: only pass if same level (or bridge makes it walkable)
+      // Floor/spawn: pass if same level OR shooting down from higher level
       const ov=overAt(cx,cy);
       if(bridgeActive(ov,curL)){ /* pass, level stays */ }
       else if(ci&&(ci.kind==='piso'||ci.kind==='spawn')){
         const cellL=ci.kind==='spawn'?0:ci.level;
-        if(cellL!==curL) return {x:lastX,y:lastY,L:curL};  // wrong floor = hit
+        if(cellL>curL) return {x:lastX,y:lastY,L:curL};     // shooting UP to higher floor = hit
+        // cellL <= curL: same level or shooting down = pass, adopt the lower level
+        curL = cellL;
       }
       // Stair: can change level to the other end of the stair
       else if(ci&&ci.kind==='escada'){
@@ -392,6 +394,22 @@ function draw(){
     }
   }
 
+  // 2.5) Balas e sparks (antes da oclusão — pontes/estruturas cobrem quando no mesmo nível)
+  for(const b of bullets){
+    ctx.fillStyle='#2a2218';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
+    ctx.fillStyle='#f0e8d8';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
+  }
+  for(const h of hits){
+    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
+    const alpha = h.life/0.25;
+    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
+    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
+  }
+
   // 3) oclusão por andar + ponte: bloqueios ao redor da ponte viram
   //    cobertura quando o player pisa nela (efeito de profundidade).
   const pci = collInfo(collAt(Math.floor(player.x/MTILE), Math.floor(player.y/MTILE)));
@@ -420,29 +438,59 @@ function draw(){
     }
   }
 
-  // 4) Balas e sparks (sempre na frente de tudo)
-  for(const b of bullets){
-    ctx.fillStyle='#2a2218';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
-    ctx.fillStyle='#f0e8d8';
-    ctx.beginPath(); ctx.arc(b.x, b.y, 1, 0, 6.28); ctx.fill();
-  }
-  for(const h of hits){
-    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
-    const alpha = h.life/0.25;
-    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
-    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
-    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
-  }
-
-  // HUD
+  // ═══════════ HUD ═══════════
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle='rgba(30,22,18,.72)';
-  roundRect(16,14,132,34,8); ctx.fill();
-  ctx.fillStyle='#f4c95d'; ctx.font='bold 16px system-ui'; ctx.textAlign='left';
-  ctx.fillText('Nível '+player.L, 28, 37);
-  // Custom crosshair: tile [5,3] from weapons sheet, at mouse pos
+
+  // ── Vida (top-left) ──
+  const hp=player.hp||100, hpMax=100;
+  const hx=16, hy=14, bw=174, bh=22, br=10;
+  // Panel
+  ctx.fillStyle='rgba(18,13,9,.82)';
+  roundRect(hx, hy, bw+12, bh+18, br); ctx.fill();
+  ctx.strokeStyle='rgba(200,160,110,.25)'; ctx.lineWidth=1;
+  roundRect(hx, hy, bw+12, bh+18, br); ctx.stroke();
+  // Heart icon
+  ctx.fillStyle='#d4453a'; ctx.font='15px system-ui';
+  ctx.fillText('♥', hx+8, hy+20);
+  // Bar bg
+  ctx.fillStyle='#2a1414';
+  roundRect(hx+28, hy+6, bw, bh, bh/2); ctx.fill();
+  // Bar fill with gradient-like segments
+  const ratio=Math.max(0,hp/hpMax);
+  if(ratio>0){
+    const grad=ctx.createLinearGradient(hx+28,0,hx+28+bw,0);
+    grad.addColorStop(0,'#c2422e'); grad.addColorStop(1,'#e85d3a');
+    ctx.fillStyle=grad;
+    roundRect(hx+28, hy+6, bw*ratio, bh, bh/2); ctx.fill();
+    // Shine on top
+    ctx.fillStyle='rgba(255,255,255,.12)';
+    roundRect(hx+28, hy+6, bw*ratio, bh/2, [bh/2,bh/2,0,0]); ctx.fill();
+  }
+  // HP number
+  ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui'; ctx.textAlign='center';
+  ctx.fillText(hp+' / '+hpMax, hx+28+bw/2, hy+6+bh/2+4);
+  // Separator dots (decorative)
+  ctx.fillStyle='rgba(200,160,110,.4)'; ctx.textAlign='left'; ctx.font='8px system-ui';
+  ctx.fillText('···················', hx+28+4, hy+bh+12);
+
+  // ── Arma (bottom-center) ──
+  const wW=72, wH=60, wX=VW/2-wW/2, wY=VH-wH-22;
+  ctx.fillStyle='rgba(18,13,9,.82)';
+  roundRect(wX, wY, wW, wH, 12); ctx.fill();
+  ctx.strokeStyle='rgba(200,160,110,.35)'; ctx.lineWidth=1.5;
+  roundRect(wX, wY, wW, wH, 12); ctx.stroke();
+  // Top accent line
+  ctx.strokeStyle='rgba(244,201,93,.5)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(wX+16, wY); ctx.lineTo(wX+wW-16, wY); ctx.stroke();
+  // Weapon sprite
+  if(IMG.weapons){
+    ctx.drawImage(IMG.weapons, 0,0, SPR,SPR, wX+wW/2-18, wY+6, 36,36);
+  }
+  // Label
+  ctx.fillStyle='#e8d5b5'; ctx.font='bold 9px system-ui'; ctx.textAlign='center';
+  ctx.fillText('PISTOLA', wX+wW/2, wY+wH-9);
+
+  // Custom crosshair
   if(IMG.weapons){
     const cs=SPR*2;  // crosshair size (48px)
     ctx.drawImage(IMG.weapons, 5*SPR, 3*SPR, SPR, SPR, mouse.sx-cs/2, mouse.sy-cs/2, cs, cs);
