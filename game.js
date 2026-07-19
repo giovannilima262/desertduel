@@ -464,20 +464,7 @@ function draw(){
     if(a<1) ctx.restore();
   }
 
-  // 1.5) armas no chão (do editor) — sombra + bob
-  if(IMG.weapons){
-    const wNow2 = performance.now()/1000;
-    for(const it of gunItems){
-      if(it.c<c0-1||it.c>=c1||it.r<r0-1||it.r>=r1) continue;
-      const w=WEAPONS[it.t]; if(!w) continue;
-      const gx=it.c*MTILE, gy=it.r*MTILE + Math.sin(wNow2*3+it.bob)*1.5;
-      ctx.fillStyle='rgba(0,0,0,0.25)';
-      ctx.beginPath(); ctx.ellipse(it.c*MTILE+MTILE/2, it.r*MTILE+MTILE*0.85, MTILE*0.34, MTILE*0.13, 0, 0, 6.28); ctx.fill();
-      ctx.drawImage(IMG.weapons, w.spr*SPR, 0, SPR, SPR, gx-(SPR-MTILE)/2, gy-(SPR-MTILE)/2-2, SPR, SPR);
-    }
-  }
-
-	  // 2) player (sombra + mascote 24px, ancorado nos pés)
+  // 2) player (sombra + mascote 24px, ancorado nos pés)
 	  ctx.fillStyle='rgba(0,0,0,0.28)';
 	  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
 	  if(IMG.players){
@@ -555,6 +542,20 @@ function draw(){
 	    }
 	  }
 
+  // 3a.5) armas no chão — na frente dos pisos
+  if(IMG.weapons){
+    const wNow2 = performance.now()/1000;
+    for(const it of gunItems){
+      if(it.c<c0-1||it.c>=c1||it.r<r0-1||it.r>=r1) continue;
+      const w=WEAPONS[it.t]; if(!w) continue;
+      const gx=it.c*MTILE, gy=it.r*MTILE + Math.sin(wNow2*3+it.bob)*1.5;
+      ctx.fillStyle='rgba(0,0,0,0.25)';
+      ctx.beginPath(); ctx.ellipse(it.c*MTILE+MTILE/2, it.r*MTILE+MTILE*0.85, MTILE*0.34, MTILE*0.13, 0, 0, 6.28); ctx.fill();
+      ctx.drawImage(IMG.weapons, w.spr*SPR, 0, SPR, SPR, gx-(SPR-MTILE)/2, gy-(SPR-MTILE)/2-2, SPR, SPR);
+    }
+  }
+
+	  
 	  // 3b) Arma na mão — na frente dos pisos (se não estiver tocando ponte)
 	  if(!_weaponOnBridge && IMG.players && IMG.weapons) _drawWeapon();
 
