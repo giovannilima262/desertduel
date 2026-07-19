@@ -53,7 +53,7 @@ function blitMapMato(t,x,y,rot){
 
 //======================= MAPA =======================
 let MAP=null, COLS=0, ROWS=0, WORLD_W=0, WORLD_H=0;
-let layers=[], coll=[], over=[], mato=[], matoTop={}, matoCache={};
+let layers=[], coll=[], over=[], mato=[], sombra=[], matoTop={}, sombraTop={}, matoCache={};
 const idx=(c,r)=>r*COLS+c;
 
 function loadLevel(){
@@ -62,13 +62,22 @@ function loadLevel(){
   coll = MAP.coll || new Array(COLS*ROWS).fill(0);
   over = MAP.over || new Array(COLS*ROWS).fill(0);
   mato = MAP.mato || new Array(COLS*ROWS).fill(0);
+  sombra = MAP.sombra || new Array(COLS*ROWS).fill(0);
   matoCache = {};  // fresh tile cache for this level
-  // Pre-compute which layer holds the front sprite for each mato cell
-  matoTop = {};
+  // Pre-compute topmost layer for mato and sombra cells
+  matoTop = {}; sombraTop = {};
   for(let i=0;i<mato.length;i++){
-    if(!mato[i]) continue;
-    for(let li=layers.length-1;li>=0;li--){
-      if(layers[li].tiles[i]){ matoTop[i]=li; break; }
+    if(mato[i]){
+      for(let li=layers.length-1;li>=0;li--){
+        if(layers[li].tiles[i]){ matoTop[i]=li; break; }
+      }
+    }
+  }
+  for(let i=0;i<sombra.length;i++){
+    if(sombra[i]){
+      for(let li=layers.length-1;li>=0;li--){
+        if(layers[li].tiles[i]){ sombraTop[i]=li; break; }
+      }
     }
   }
 }
@@ -118,6 +127,18 @@ function playerOverlapsBridge(px, py, L){
       if(bridgeActive(overAt(c,r), L)) return true;
   return false;
 }
+function playerOverlapsSombra(px, py){
+  // Any part of the player's sprite touching a sombra cell?
+  const half=SPR/2;
+  const top=py-6-half, bot=py-6+half;
+  const left=px-half, right=px+half;
+  const c0=Math.floor(left/MTILE),  c1=Math.floor((right-0.001)/MTILE);
+  const r0=Math.floor(top/MTILE),   r1=Math.floor((bot-0.001)/MTILE);
+  for(let r=r0; r<=r1; r++)
+    for(let c=c0; c<=c1; c++)
+      if(sombra[idx(c,r)]) return true;
+  return false;
+}
 function canStep(fromVal,L,toVal,toOver){
   const B=collInfo(toVal); if(B && B.kind==='block') return null;
   const A=collInfo(fromVal);
@@ -162,7 +183,7 @@ function step(dt){
     moveAxis(player.x+dx/l*s, player.y, true);
     moveAxis(player.x, player.y+dy/l*s, false);
   }
-  player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%3) : 0;
+  player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0; // frame 3 = morte, skip
   const tx=clamp(player.x-(VW/VIEW_SCALE)/2, 0, Math.max(0,WORLD_W-VW/VIEW_SCALE));
   const ty=clamp(player.y-(VH/VIEW_SCALE)/2, 0, Math.max(0,WORLD_H-VH/VIEW_SCALE));
   cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
@@ -222,7 +243,8 @@ function draw(){
   const naEscada = !!(pci && pci.kind==='escada');
   // Qualquer parte do asset do player (24px) tocando a ponte ativa o efeito
   const onBridge = !naEscada && playerOverlapsBridge(player.x, player.y, player.L);
-  window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge;
+  const onSombra = playerOverlapsSombra(player.x, player.y);
+  window.__occ=0; window.__esc=naEscada; window.__onBridge=onBridge; window.__onSombra=onSombra;
   if(!naEscada)
   for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
     let cover = coversHero(i,player.L);
@@ -230,6 +252,7 @@ function draw(){
       const ci=collInfo(coll[i]);
       if(ci && ci.kind==='block') cover = blockNearBridge(c, r, player.L);
     }
+    if(!cover && onSombra && sombra[i]) cover = true;
     if(!cover) continue;
     for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
       if(!L.tiles[i]) continue;

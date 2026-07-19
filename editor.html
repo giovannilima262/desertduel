@@ -98,6 +98,7 @@
     <button id="ckSpawn"  class="ck" data-kind="spawn">◎ Spawn</button>
     <button id="ckPonte"  class="ck" data-kind="ponte" title="Ligada a um nível: o player daquele andar passa POR TRÁS do mapa aqui. Só funciona no nível escolhido. Não altera os andares.">◫ Ponte</button>
     <button id="ckMato"   class="ck" data-kind="mato" title="Vegetação decorativa — renderiza na frente com animação de vento">🌿 Mato</button>
+    <button id="ckSombra" class="ck" data-kind="sombra" title="Sombra — quando o player toca, o asset vai pra frente dele">🌘 Sombra</button>
     <span class="lbl" id="lvlLbl">Nível</span>
     <button id="lvlDn">−</button><span id="lvlVal" style="min-width:14px;text-align:center">0</span><button id="lvlUp">+</button>
     <span id="stairCtl" style="display:none">
@@ -213,8 +214,9 @@ function collInfo(v){
 function collValue(){
   if(collKind==='block') return 1;
   if(collKind==='spawn') return 2;
-  if(collKind==='mato')  return 0;   // mato is independent — never stored in coll[]
-  if(collKind==='piso')  return 10+collLevel;
+  if(collKind==='mato')   return 0;   // mato is independent — never stored in coll[]
+  if(collKind==='sombra') return 0;   // sombra is independent too
+  if(collKind==='piso')   return 10+collLevel;
   if(collKind==='escada'){ const lo=Math.min(collStairLo,collStairHi), hi=Math.max(collStairLo,collStairHi); return 100+lo*10+hi; }
   return 0;
 }
@@ -226,6 +228,7 @@ let cols = 60, rows = 46;
 let layers = [], active = 0, coll = [];   // layers[]: {name, visible, tiles[]} — drawn bottom→top
 let over = [];                            // occlusion/ponte flag, PARALLEL to coll (doesn't replace it)
 let mato = [];                            // decorative bush/grass flag, PARALLEL to coll (independent)
+let sombra = [];                          // shadow flag — player touch renders cell on top
 let mode = 'tiles';                       // 'tiles' (paint layers[active]) | 'coll'
 let tool = 'paint';
 let sheet = 'tiles';
@@ -263,11 +266,11 @@ function cloneLayer(L){
     : { ...L, tiles:L.tiles.slice() };
 }
 function snapshot(){
-  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice() };
+  return { cols, rows, active, layers: layers.map(cloneLayer), coll: coll.slice(), over: over.slice(), mato: mato.slice(), sombra: sombra.slice() };
 }
 function restore(s){
   cols=s.cols; rows=s.rows; active=Math.min(s.active, s.layers.length-1);
-  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice();
+  layers = s.layers.map(cloneLayer); coll = s.coll.slice(); over = (s.over||[]).slice(); mato = (s.mato||[]).slice(); sombra = (s.sombra||[]).slice();
   $('mCols').value=cols; $('mRows').value=rows;
   setLayer(); renderMap(); save();
 }
@@ -295,6 +298,7 @@ function blankLayers(){
   coll = new Array(cols*rows).fill(0);
   over = new Array(cols*rows).fill(0);
   mato = new Array(cols*rows).fill(0);
+  sombra = new Array(cols*rows).fill(0);
 }
 function overAt(c,r){ return (c<0||r<0||c>=cols||r>=rows) ? 0 : over[r*cols+c]; }
 const isImg     = L => !!L && L.type==='image';
@@ -431,6 +435,18 @@ function renderMap(){
         mapCtx.font='bold '+Math.round(cell*0.34)+'px system-ui'; mapCtx.textAlign='right'; mapCtx.textBaseline='top';
         mapCtx.fillText('◫'+pl, x+cell-2, y+2); mapCtx.restore(); }
     }
+    // sombra overlay: purple diagonal hatching — independent like mato, renders when player touches it
+    mapCtx.lineWidth=Math.max(1,cell*0.07);
+    for(let r=vr0;r<vr1;r++) for(let c=vc0;c<vc1;c++){ if(!sombra[idx(c,r)]) continue;
+      const x=c*cell, y=r*cell;
+      mapCtx.save(); mapCtx.globalAlpha=0.55; mapCtx.beginPath(); mapCtx.rect(x,y,cell,cell); mapCtx.clip();
+      mapCtx.strokeStyle='rgba(160,100,220,0.85)';
+      mapCtx.beginPath(); for(let k=-cell;k<cell;k+=Math.max(4,cell*0.3)){ mapCtx.moveTo(x+k,y+cell); mapCtx.lineTo(x+k+cell,y); }
+      mapCtx.stroke(); mapCtx.restore();
+      if(cell>=16){ mapCtx.save(); mapCtx.globalAlpha=0.65; mapCtx.fillStyle='rgba(20,15,25,0.9)';
+        mapCtx.font='bold '+Math.round(cell*0.3)+'px system-ui'; mapCtx.textAlign='right'; mapCtx.textBaseline='top';
+        mapCtx.fillText('🌘', x+cell-2, y+1); mapCtx.restore(); }
+    }
   }
   if(showGrid){
     mapCtx.strokeStyle='rgba(0,0,0,0.18)'; mapCtx.lineWidth=1;
@@ -510,6 +526,7 @@ function applyAt(c,r,erase){
   if(mode==='coll'){
     if(collKind==='ponte') over[i] = erase ? 0 : (collLevel+1);   // ponte bound to a level (stored as level+1); leaves coll[] intact
     else if(collKind==='mato') mato[i] = erase ? 0 : 1;            // mato is independent — doesn't touch coll[]
+    else if(collKind==='sombra') sombra[i] = erase ? 0 : 1;        // sombra is independent too
     else coll[i] = erase ? 0 : collValue();
     return;
   }
@@ -524,6 +541,7 @@ function floodFill(c,r){
     let arr, repl;
     if(collKind==='ponte'){ arr=over; repl=collLevel+1; }
     else if(collKind==='mato'){ arr=mato; repl=1; }
+    else if(collKind==='sombra'){ arr=sombra; repl=1; }
     else { arr=coll; repl=collValue(); }
     const target=arr[i]; if(target===repl) return;
     const st=[[c,r]]; while(st.length){ const [x,y]=st.pop(); if(x<0||y<0||x>=cols||y>=rows) continue;
@@ -590,7 +608,7 @@ function copySel(){
   if(pasteMode) exitPaste();        // copying always returns you to plain selection
   if(!selRect) return;
   const {c0,r0,c1,r1}=selRect, w=c1-c0+1, h=r1-r0+1;
-  clip = { w, h, layers:{}, coll:new Array(w*h).fill(0), over:new Array(w*h).fill(0), mato:new Array(w*h).fill(0) };
+  clip = { w, h, layers:{}, coll:new Array(w*h).fill(0), over:new Array(w*h).fill(0), mato:new Array(w*h).fill(0), sombra:new Array(w*h).fill(0) };
   for(const L of layers){
     if(L.type==='image') continue;                 // image layers aren't stampable
     const buf = new Array(w*h).fill(null);
@@ -600,7 +618,7 @@ function copySel(){
     }
     clip.layers[L.name] = buf;
   }
-  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ clip.coll[y*w+x]=coll[(r0+y)*cols+(c0+x)]; clip.over[y*w+x]=over[(r0+y)*cols+(c0+x)]; clip.mato[y*w+x]=mato[(r0+y)*cols+(c0+x)]; }
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ clip.coll[y*w+x]=coll[(r0+y)*cols+(c0+x)]; clip.over[y*w+x]=over[(r0+y)*cols+(c0+x)]; clip.mato[y*w+x]=mato[(r0+y)*cols+(c0+x)]; clip.sombra[y*w+x]=sombra[(r0+y)*cols+(c0+x)]; }
   updateClipUI();
 }
 // The sheet's terrain/building blocks are 3 columns wide (bases 0,5,10,15):
@@ -611,13 +629,13 @@ function mirrorTileH(t){
   return (off<=2) ? {...t, c: base + (2-off)} : {...t};
 }
 function mapClip(fn, newW, newH, idxFn){
-  const out = { w:newW, h:newH, layers:{}, coll:new Array(newW*newH).fill(0), over:new Array(newW*newH).fill(0), mato:new Array(newW*newH).fill(0) };
+  const out = { w:newW, h:newH, layers:{}, coll:new Array(newW*newH).fill(0), over:new Array(newW*newH).fill(0), mato:new Array(newW*newH).fill(0), sombra:new Array(newW*newH).fill(0) };
   for(const [name,buf] of Object.entries(clip.layers)){
     const nb = new Array(newW*newH).fill(null);
     for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++) nb[idxFn(x,y)] = fn(buf[y*clip.w+x]);
     out.layers[name] = nb;
   }
-  for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){ out.coll[idxFn(x,y)]=clip.coll[y*clip.w+x]; out.over[idxFn(x,y)]=clip.over[y*clip.w+x]; out.mato[idxFn(x,y)]=clip.mato[y*clip.w+x]; }
+  for(let y=0;y<clip.h;y++) for(let x=0;x<clip.w;x++){ out.coll[idxFn(x,y)]=clip.coll[y*clip.w+x]; out.over[idxFn(x,y)]=clip.over[y*clip.w+x]; out.mato[idxFn(x,y)]=clip.mato[y*clip.w+x]; out.sombra[idxFn(x,y)]=clip.sombra[y*clip.w+x]; }
   clip = out; updateClipUI(); renderMap();
 }
 function rotateClip(){ if(!clip) return;            // 90° CW: (x,y) -> (h-1-y, x)
@@ -644,6 +662,7 @@ function pasteAt(pc,pr){
     const v=clip.coll[y*clip.w+x]; if(v) coll[r*cols+c]=v;
     const o=clip.over[y*clip.w+x]; if(o) over[r*cols+c]=o;
     const m=clip.mato[y*clip.w+x]; if(m) mato[r*cols+c]=m;
+    const sb=clip.sombra[y*clip.w+x]; if(sb) sombra[r*cols+c]=sb;
   }
   setLayer(); renderMap(); save();
 }
@@ -676,9 +695,9 @@ function deleteSel(allLayers){
         if(L.locked){ blockedByLock=true; continue; }   // a locked layer is protected
         if(L.tiles[i]){ L.tiles[i]=null; cleared++; }
       }
-      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; }
+      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
     } else if(mode==='coll'){
-      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; }
+      if(coll[i]){ coll[i]=0; cleared++; } if(over[i]){ over[i]=0; cleared++; } if(mato[i]){ mato[i]=0; cleared++; } if(sombra[i]){ sombra[i]=0; cleared++; }
     } else {
       const L=layers[active];
       if(L.type!=='tiles'){ continue; }
@@ -880,6 +899,7 @@ function startTest(){
   for(let i=0;i<coll.length;i++){ if(coll[i]===2){ start=i; break; } }            // prefer a Spawn
   if(start===null) for(let i=0;i<coll.length;i++){ const ci=collInfo(coll[i]); if(ci&&ci.kind==='piso'){ start=i; break; } }
   if(start===null) for(let i=0;i<mato.length;i++){ if(mato[i]){ start=i; break; } }  // mato cell (decorative, but walkable)
+  if(start===null) for(let i=0;i<sombra.length;i++){ if(sombra[i]){ start=i; break; } }  // sombra cell
   if(start===null) for(let i=0;i<over.length;i++){ if(over[i]){ start=i; break; } }  // or a bridge
   if(start===null){ alert('Pinte Piso (e Escada) antes de testar — o boneco anda sobre o Piso.'); return; }
   testMode=true; mode='test';
@@ -937,13 +957,14 @@ $('resizeBtn').onclick=()=>{
   const nc=clamp(+$('mCols').value|0,8,200), nr=clamp(+$('mRows').value|0,8,200);
   if(nc===cols && nr===rows) return;
   pushHistory();
-  const old=layers, oc=coll, oo=over, om=mato, ocols=cols, orows=rows, oactive=active;
+  const old=layers, oc=coll, oo=over, om=mato, osb=sombra, ocols=cols, orows=rows, oactive=active;
   cols=nc; rows=nr;
   layers = old.map(L=>{ if(L.type==='image') return L;            // image layers survive as-is
     const n=mkLayer(L.name); n.visible=L.visible; return n; });
   coll = new Array(cols*rows).fill(0);
   over = new Array(cols*rows).fill(0);
   mato = new Array(cols*rows).fill(0);
+  sombra = new Array(cols*rows).fill(0);
   active = Math.min(oactive, layers.length-1);
   for(let r=0;r<Math.min(nr,orows);r++)for(let c=0;c<Math.min(nc,ocols);c++){
     for(let i=0;i<layers.length;i++){ if(layers[i].type==='image') continue;
@@ -951,6 +972,7 @@ $('resizeBtn').onclick=()=>{
     coll[idx(c,r)] = oc[r*ocols+c];
     over[idx(c,r)] = oo[r*ocols+c];
     mato[idx(c,r)] = om[r*ocols+c];
+    sombra[idx(c,r)] = osb[r*ocols+c];
   }
   setLayer(); renderMap(); save();
 };
@@ -1005,7 +1027,7 @@ function serialize(){
       ? { type:'image', name:L.name, visible:L.visible, locked:L.locked, src:L.src,
           gx:L.gx, gy:L.gy, cellsW:L.cellsW, baseW:L.baseW, alpha:L.alpha }
       : { type:'tiles', name:L.name, visible:L.visible, locked:L.locked, alpha:L.alpha, tiles:L.tiles.map(enc) }),
-    coll, over, mato };
+    coll, over, mato, sombra };
 }
 let quotaWarned = false, saveT = null;
 // sliders/wheel fire continuously — debounce so a big image dataURL isn't re-serialised per pixel
@@ -1044,6 +1066,7 @@ function deserialize(d){
   if(d.coll) d.coll.forEach((v,i)=>{ if(i<coll.length) coll[i]=v||0; });
   if(d.over) d.over.forEach((v,i)=>{ if(i<over.length) over[i]=v||0; });
   if(d.mato) d.mato.forEach((v,i)=>{ if(i<mato.length) mato[i]=v||0; });
+  if(d.sombra) d.sombra.forEach((v,i)=>{ if(i<sombra.length) sombra[i]=v||0; });
   $('mCols').value=cols; $('mRows').value=rows;
   return true;
 }
