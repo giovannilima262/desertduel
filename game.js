@@ -310,7 +310,7 @@ function step(dt){
   const shakeY = Math.cos(shakePhase*67)*shakePhase*1;
   const tx=clamp(player.x-(VW/VIEW_SCALE)/2, 0, Math.max(0,WORLD_W-VW/VIEW_SCALE));
   const ty=clamp(player.y-(VH/VIEW_SCALE)/2, 0, Math.max(0,WORLD_H-VH/VIEW_SCALE));
-  cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
+  cam.x+=(tx-cam.x)*0.04; cam.y+=(ty-cam.y)*0.04;  // delay generoso — câmera bem solta
   cam.x += shakeX; cam.y += shakeY;  // direct offset, returns to 0 naturally
 }
 
