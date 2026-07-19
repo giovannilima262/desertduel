@@ -275,7 +275,12 @@ function step(dt){
   shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
   for(const b of bullets) bulletStep(b, dt);
   // Spawn impact sparks at bullet collision point or max-range target
-  for(const b of bullets){ if(b.life<=0) spawnSparks(b.tx, b.ty); }
+  for(const b of bullets){ if(b.life<=0){
+    const d = Math.hypot(b.vx,b.vy)||1;
+    const nx = b.tx - (b.vx/d)*MTILE*0.25;  // puxa origem pra trás, longe da parede
+    const ny = b.ty - (b.vy/d)*MTILE*0.25;
+    spawnSparks(nx, ny, b.vx, b.vy);
+  }}
   bullets = bullets.filter(b => b.life > 0);
   for(const h of hits){ h.life -= dt; }
   hits = hits.filter(h => h.life > 0);
@@ -382,14 +387,17 @@ function raycast(x1, y1, x2, y2, startL){
   }
   return {x:x2,y:y2,L:curL};  // reached crosshair
 }
-function spawnSparks(x, y){
-  for(let i=0;i<6;i++){
-    const a = Math.random()*6.28;
-    const spd = MTILE*(3+Math.random()*6);
+function spawnSparks(x, y, vx, vy){
+  const baseAng = Math.atan2(vy, vx) + Math.PI;  // direção contrária à bala (rebate)
+  for(let i=0;i<8;i++){
+    const a = baseAng + (Math.random()*2-1)*0.7; // cone mais aberto de ±40°
+    const spd = MTILE*(3+Math.random()*5);
+    const len = MTILE*(0.1+Math.random()*0.2);   // riscos bem mais curtos
     hits.push({
       x, y,
       vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
-      life: 0.15+Math.random()*0.1,
+      len, ang: a,
+      life: 0.08+Math.random()*0.06,
     });
   }
 }
@@ -590,14 +598,21 @@ function draw(){
 	  }
 	  for(const h of hits){
 	    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
-	    const alpha = h.life/0.25;
-	    ctx.fillStyle=`rgba(245,235,215,${alpha})`;
-	    ctx.beginPath(); ctx.arc(h.x, h.y, 2.5, 0, 6.28); ctx.fill();
-	    ctx.fillStyle=`rgba(255,252,245,${alpha*0.7})`;
-	    ctx.beginPath(); ctx.arc(h.x, h.y, 1, 0, 6.28); ctx.fill();
-	  }
-
-	  // ── Seta acima do player (na frente de tudo) ──
+	    const alpha = h.life/0.14;
+	    ctx.strokeStyle=`rgba(245,235,215,${alpha})`;
+	    ctx.lineWidth = 1;
+	    ctx.beginPath();
+	    ctx.moveTo(h.x, h.y);
+	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len, h.y - Math.sin(h.ang)*h.len);
+	    ctx.stroke();
+	    ctx.strokeStyle=`rgba(255,252,245,${alpha*0.8})`;
+	    ctx.lineWidth = 0.5;
+	    ctx.beginPath();
+	    ctx.moveTo(h.x, h.y);
+	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
+	    ctx.stroke();
+  }
+  // ── Seta acima do player (na frente de tudo) ──
   const ax = player.x, ay = player.y - SPR*0.7;
   const s = MTILE*0.16;
   const bob = Math.sin(performance.now()/1000*3) * 1.5;
@@ -605,9 +620,9 @@ function draw(){
   ctx.strokeStyle='#1a3a10';
   ctx.lineWidth = 0.8;
   ctx.beginPath();
-  ctx.moveTo(ax, ay + s + bob);          // ponta (baixo)
-  ctx.lineTo(ax - s, ay - s*0.5 + bob);  // topo esquerdo
-  ctx.lineTo(ax + s, ay - s*0.5 + bob);  // topo direito
+  ctx.moveTo(ax, ay + s + bob);
+  ctx.lineTo(ax - s, ay - s*0.5 + bob);
+  ctx.lineTo(ax + s, ay - s*0.5 + bob);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
