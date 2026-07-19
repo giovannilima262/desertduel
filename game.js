@@ -213,6 +213,8 @@ let flashT = 0, flashAng = 0;  // muzzle flash
 let recoilForce = 0;        // current recoil offset (decays)
 let bullets = [];           // projectiles: {x,y,vx,vy,life}
 let hits = [];              // impact sparks at target
+let smoke = [];             // pegadas no chão
+let footprintDist = 0;       // distância acumulada para spawn de pegada
 let shakePhase = 0;          // screen shake damped oscillation
 let fireCooldown = 0;       // time until next shot allowed
 
@@ -284,6 +286,23 @@ function step(dt){
   bullets = bullets.filter(b => b.life > 0);
   for(const h of hits){ h.life -= dt; }
   hits = hits.filter(h => h.life > 0);
+  // Pegadas no chão — spawn a cada 12px percorridos
+  if(player.moving){
+    const s = SPEED*dt;
+    footprintDist += s;
+    if(footprintDist >= MTILE*0.75){  // uma pegada a cada ~12px
+      footprintDist = 0;
+      smoke.push({
+        x: player.x,
+        y: player.y + 2,
+        life: 0.8+Math.random()*0.4,
+      });
+    }
+  } else {
+    footprintDist = MTILE*0.75;  // reset ao parar — spawn imediato ao voltar a andar
+  }
+  for(const s of smoke){ s.life -= dt; }
+  smoke = smoke.filter(s => s.life > 0);
 
   // Camera (with damped oscillation screen shake)
   const shakeX = Math.sin(shakePhase*55)*shakePhase*1.5;
@@ -472,6 +491,18 @@ function draw(){
     if(a<1) ctx.restore();
   }
 
+
+  // 1.8) pegadas no chão
+  for(const s of smoke){
+    const alpha = s.life/0.8*0.14;
+    ctx.fillStyle=`rgba(60,40,20,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(s.x-2, s.y, MTILE*0.10, 0, 6.28);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(s.x+2, s.y, MTILE*0.08, 0, 6.28);
+    ctx.fill();
+  }
   // 2) player (sombra + mascote 24px, ancorado nos pés)
 	  ctx.fillStyle='rgba(0,0,0,0.28)';
 	  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
