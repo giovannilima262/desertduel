@@ -264,6 +264,9 @@ let zoneState = 'idle', zoneTimer = 0, zoneDmgTimer = 0, zoneNum = 0;   // idle|
 let zoneCurrent = null, zoneNext = null;      // {cx,cy,r} em px (world coords)
 let zoneShrinkFrom = null;                   // estado da zona no início do shrink
 let zoneShrinkDur = ZONE_SHRINK;             // duração real do shrink atual (normal ou fast)
+let zoneParts = [];                          // partículas de areia/brasa na tempestade
+let zoneBanner = null;                       // anúncio central: {text,sub,color,t,dur}
+let zoneHitFlash = 0;                        // flash vermelho ao tomar dano da zona
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -619,6 +622,7 @@ function initZones(){
   zoneCurrent = {cx, cy, r};
   generateNextZone();
   zoneState = 'waiting'; zoneTimer = 30;  // primeira safe mais rápida
+  showZoneBanner('ZONA 1/'+MAX_ZONES, 'primeira zona fecha em 30s', '#f2c14e');
 }
 function generateNextZone(){
   if(!zoneCurrent || zoneNum >= MAX_ZONES - 1) return;  // última zona = final
@@ -654,17 +658,19 @@ function updateZone(dt){
       // Última safe: fecha até quase zero
       zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
       zoneState = 'final'; zoneTimer = ZONE_FINAL; zoneNext = null;
+      showZoneBanner('ZONA FINAL', 'sem área segura — lute!', '#ff4630');
       return;
     }
     // Começa a fechar — guarda estado inicial pra interpolar
     zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
     zoneShrinkDur = zoneNum >= MAX_ZONES - 4 ? ZONE_SHRINK_FAST : ZONE_SHRINK;
     zoneState = 'shrinking'; zoneTimer = zoneShrinkDur;
+    showZoneBanner('A ZONA ESTÁ FECHANDO', 'corra para o círculo branco', '#ff8c3c');
   } else if(zoneState==='final'){
     // Fechamento derradeiro: raio vai até ~1 tile
     const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
     zoneCurrent.r = zoneShrinkFrom.r * (1 - t*t);  // ease-in quadrático até zero
-    if(zoneTimer <= 0){ zoneTimer = 0; zoneCurrent.r = MTILE*0.5; } // trava no zero
+    if(zoneTimer <= 0){ zoneTimer = 0; zoneCurrent.r = 0; } // fechou tudo: sem área segura
   } else if(zoneState==='shrinking'){
     const t = clamp(1 - zoneTimer/zoneShrinkDur, 0, 1);  // 0→1 smoothstep
     const ease = t*t*(3 - 2*t);                          // suave no início e no fim
@@ -677,17 +683,24 @@ function updateZone(dt){
       generateNextZone();
       zoneState = zoneNext ? 'waiting' : 'final';
       zoneTimer = ZONE_WAIT;
+      if(zoneState==='waiting')
+        showZoneBanner('ZONA '+(zoneNum+1)+'/'+MAX_ZONES, 'próxima zona em '+ZONE_WAIT+'s', '#f2c14e');
     }
   }
+  // FX da zona (banner, flash, partículas da tempestade)
+  if(zoneBanner){ zoneBanner.t -= dt; if(zoneBanner.t <= 0) zoneBanner = null; }
+  zoneHitFlash = Math.max(0, zoneHitFlash - dt*2);
+  updateZoneParts(dt);
   // Dano fora da zona
   if(zoneCurrent && zoneState!=='idle'){
     const dist = Math.hypot(player.x - zoneCurrent.cx, player.y - zoneCurrent.cy);
-    if(dist > zoneCurrent.r){
+    if(zoneCurrent.r <= 0 || dist > zoneCurrent.r){
       zoneDmgTimer += dt;
       if(zoneDmgTimer >= ZONE_DMG_TICK){
         zoneDmgTimer -= ZONE_DMG_TICK;
         const dmg = zoneNum < 5 ? 1 : 1 + (zoneNum - 4);  // 1 até zona 6, depois escala
         player.hp -= dmg;
+        zoneHitFlash = 1;
         if(player.hp <= 0){ player.hp = 0; /* morte depois */ }
       }
     } else {
@@ -695,51 +708,166 @@ function updateZone(dt){
     }
   }
 }
+function updateZoneParts(dt){
+  if(!zoneCurrent || zoneState==='idle'){ zoneParts.length = 0; return; }
+  const vw = VW/VIEW_SCALE, vh = VH/VIEW_SCALE;
+  // Spawn: só dentro da câmera e fora da safe
+  let tries = 0;
+  while(zoneParts.length < 70 && tries < 24){
+    tries++;
+    const x = cam.x - 24 + Math.random()*(vw+48);
+    const y = cam.y - 24 + Math.random()*(vh+48);
+    if(zoneCurrent.r > 0 && Math.hypot(x-zoneCurrent.cx, y-zoneCurrent.cy) <= zoneCurrent.r) continue;
+    const a = Math.random()*Math.PI*2, sp = 5 + Math.random()*13;
+    zoneParts.push({ x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - 5,
+      life:0, max:1.1 + Math.random()*1.5, s:0.7 + Math.random()*1.2,
+      hot:Math.random() < 0.4 });
+  }
+  for(let i=zoneParts.length-1; i>=0; i--){
+    const p = zoneParts[i];
+    p.life += dt; p.x += p.vx*dt; p.y += p.vy*dt;
+    const inSafe = zoneCurrent.r > 0 &&
+      Math.hypot(p.x-zoneCurrent.cx, p.y-zoneCurrent.cy) <= zoneCurrent.r;
+    const off = p.x < cam.x-30 || p.x > cam.x+vw+30 || p.y < cam.y-30 || p.y > cam.y+vh+30;
+    if(p.life >= p.max || inSafe || off) zoneParts.splice(i,1);
+  }
+}
 function drawZoneOverlay(){
-  if(!zoneCurrent) return;
+  if(!zoneCurrent || zoneState==='idle') return;
   const vx = cam.x, vy = cam.y, vw = VW/VIEW_SCALE, vh = VH/VIEW_SCALE;
+  const T = performance.now()/1000;
+  const zcx = zoneCurrent.cx, zcy = zoneCurrent.cy, r = Math.max(0, zoneCurrent.r);
+  const fullyClosed = zoneState==='final' && r <= 0;
   ctx.save();
-  // Overlay escuro fora da zona (com buraco na safe)
-  const fullyClosed = zoneState==='final' && zoneCurrent.r <= MTILE;
-  ctx.beginPath();
-  ctx.rect(vx-10, vy-10, vw+20, vh+20);
+  // ── Tempestade de areia: gradiente radial (borda quente → vermelho denso longe) ──
+  if(fullyClosed){
+    ctx.fillStyle = 'rgba(45,10,8,0.62)';
+    ctx.fillRect(vx-10, vy-10, vw+20, vh+20);
+  } else {
+    const band = Math.max(80, r*0.6);
+    const g = ctx.createRadialGradient(zcx, zcy, r, zcx, zcy, r+band);
+    g.addColorStop(0.00, 'rgba(210,80,30,0)');
+    g.addColorStop(0.10, 'rgba(210,80,30,0.28)');
+    g.addColorStop(0.45, 'rgba(110,25,12,0.48)');
+    g.addColorStop(1.00, 'rgba(45,10,8,0.62)');
+    ctx.fillStyle = g;
+    ctx.fillRect(vx-10, vy-10, vw+20, vh+20);
+  }
+  // ── Partículas de areia/brasa na tempestade ──
+  for(const p of zoneParts){
+    const k = p.life/p.max;
+    const a = k < 0.2 ? k/0.2 : 1 - (k-0.2)/0.8;
+    ctx.globalAlpha = a * (p.hot ? 0.75 : 0.45);
+    ctx.fillStyle = p.hot ? '#ffb066' : '#e0b585';
+    ctx.fillRect(p.x - p.s/2, p.y - p.s/2, p.s, p.s);
+  }
+  ctx.globalAlpha = 1;
+  // ── Parede da tempestade (anel pulsante + faíscas girando) ──
   if(!fullyClosed){
-    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2, true);
+    const accent = {waiting:'255,120,45', shrinking:'255,80,35', final:'255,45,25'}[zoneState];
+    const hz = zoneState==='final' ? 5 : zoneState==='shrinking' ? 3.2 : 1.6;
+    const pulse = 0.5 + 0.5*Math.sin(T*hz*Math.PI*2);
+    // Glow largo e suave por fora
+    ctx.strokeStyle = 'rgba('+accent+','+(0.10+0.10*pulse).toFixed(3)+')';
+    ctx.lineWidth = 14;
+    ctx.beginPath(); ctx.arc(zcx, zcy, r+7, 0, Math.PI*2); ctx.stroke();
+    // Anel principal com brilho
+    ctx.save();
+    ctx.shadowColor = 'rgba('+accent+',0.9)';
+    ctx.shadowBlur = 10 + 6*pulse;
+    ctx.strokeStyle = 'rgba('+accent+','+(0.85+0.15*pulse).toFixed(3)+')';
+    ctx.lineWidth = 2 + 1.2*pulse;
+    ctx.beginPath(); ctx.arc(zcx, zcy, r, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+    // Faíscas de energia percorrendo a parede
+    ctx.strokeStyle = 'rgba(255,220,160,'+(0.35+0.25*pulse).toFixed(3)+')';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([5, 17]);
+    ctx.lineDashOffset = -T*26;
+    ctx.beginPath(); ctx.arc(zcx, zcy, r+2.5, 0, Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]);
   }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(80,15,10,0.50)';
-  ctx.fill('evenodd');
-  // Borda da zona atual (parede da tempestade)
-  const borderColors = {
-    waiting:   ['rgba(255,70,50,0.9)',  'rgba(255,50,30,0.3)'],
-    shrinking: ['rgba(255,50,30,0.95)', 'rgba(255,30,15,0.4)'],
-    final:     ['rgba(255,30,10,0.95)', 'rgba(255,15,5,0.5)'],
-  };
-  const bc = borderColors[zoneState] || borderColors.waiting;
-  if(!(zoneState==='final' && zoneCurrent.r <= MTILE)){  // some quando fecha tudo
-    ctx.beginPath();
-    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2);
-    ctx.strokeStyle = bc[0];
-    ctx.lineWidth = zoneState==='shrinking' ? 2.5 : 2;
-    ctx.stroke();
-    // Borda externa glow
-    ctx.beginPath();
-    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r+4, 0, Math.PI*2);
-    ctx.strokeStyle = bc[1];
-    ctx.lineWidth = 8;
-    ctx.stroke();
-  }
-  // Próxima safe (preview) — visível durante espera E fechamento
+  // ── Próxima safe (preview animado com marcha de traços) ──
   if(zoneNext && (zoneState==='waiting' || zoneState==='shrinking')){
-    ctx.beginPath();
-    ctx.arc(zoneNext.cx, zoneNext.cy, zoneNext.r, 0, Math.PI*2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([12, 8]);
-    ctx.stroke();
+    const np = 0.5 + 0.5*Math.sin(T*2.4);
+    ctx.fillStyle = 'rgba(255,255,255,0.045)';
+    ctx.beginPath(); ctx.arc(zoneNext.cx, zoneNext.cy, zoneNext.r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,'+(0.55+0.30*np).toFixed(3)+')';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([14, 10]);
+    ctx.lineDashOffset = -T*18;
+    ctx.beginPath(); ctx.arc(zoneNext.cx, zoneNext.cy, zoneNext.r, 0, Math.PI*2); ctx.stroke();
     ctx.setLineDash([]);
   }
   ctx.restore();
+}
+function showZoneBanner(text, sub, color){
+  zoneBanner = { text, sub, color, t:3.4, dur:3.4 };
+}
+//── FX de zona em espaço de tela (vinheta, seta pra safe, banner) ──
+function drawZoneFX(){
+  if(!zoneCurrent || zoneState==='idle') return;
+  const T = performance.now()/1000;
+  const dist = Math.hypot(player.x - zoneCurrent.cx, player.y - zoneCurrent.cy);
+  const outside = zoneCurrent.r <= 0 || dist > zoneCurrent.r;
+  // ── Vinheta de perigo (pulsa fora da zona, flash no tick de dano) ──
+  const vig = (outside ? 0.28 + 0.10*Math.sin(T*5) : 0) + zoneHitFlash*0.35;
+  if(vig > 0.01){
+    const g = ctx.createRadialGradient(VW/2, VH/2, Math.min(VW,VH)*0.32, VW/2, VH/2, Math.max(VW,VH)*0.62);
+    g.addColorStop(0, 'rgba(200,30,15,0)');
+    g.addColorStop(1, 'rgba(160,15,8,'+Math.min(0.85,vig).toFixed(3)+')');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, VH);
+  }
+  // ── Seta apontando pra área segura (com distância em metros) ──
+  let target = null, col = '#fff';
+  if(outside && zoneCurrent.r > 0){ target = zoneCurrent; col = '#ff5a3c'; }
+  else if(!outside && zoneNext && (zoneState==='waiting' || zoneState==='shrinking')){
+    if(Math.hypot(player.x-zoneNext.cx, player.y-zoneNext.cy) > zoneNext.r){ target = zoneNext; col = '#fff'; }
+  }
+  if(target){
+    const psx = (player.x - cam.x)*VIEW_SCALE, psy = (player.y - cam.y)*VIEW_SCALE;
+    const ang = Math.atan2(target.cy - player.y, target.cx - player.x);
+    const m = Math.max(0, Math.round((Math.hypot(player.x-target.cx, player.y-target.cy) - target.r)/MTILE));
+    const bob = Math.sin(T*4)*3;
+    ctx.save();
+    ctx.translate(psx + Math.cos(ang)*(86+bob), psy + Math.sin(ang)*(86+bob));
+    ctx.rotate(ang);
+    ctx.fillStyle = col; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(13,0); ctx.lineTo(-7,-9); ctx.lineTo(-3,0); ctx.lineTo(-7,9);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 4;
+    ctx.fillStyle = col; ctx.font = 'bold 12px system-ui';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(m+'m', psx + Math.cos(ang)*114, psy + Math.sin(ang)*114);
+    ctx.restore();
+  }
+  // ── Banner de anúncio (centro-topo, fade in/out) ──
+  if(zoneBanner){
+    const b = zoneBanner, k = b.t/b.dur;                 // 1 → 0
+    const aIn = Math.min(1, (1-k)*b.dur/0.25), aOut = Math.min(1, k*b.dur/0.5);
+    const a = Math.min(aIn, aOut);
+    const y = 92 - (1 - Math.min(1,aIn))*14;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8;
+    ctx.fillStyle = b.color; ctx.font = 'bold 30px system-ui';
+    ctx.fillText(b.text, VW/2, y);
+    ctx.shadowBlur = 0;
+    const lw = ctx.measureText(b.text).width;
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    ctx.fillRect(VW/2 - lw/2, y+8, lw, 1.5);
+    if(b.sub){
+      ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 5;
+      ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.font = '600 13px system-ui';
+      ctx.fillText(b.sub, VW/2, y+28);
+    }
+    ctx.restore();
+  }
 }
 function drawZoneOnMinimap(cx, cy, z){
   if(!zoneCurrent) return;
@@ -1039,6 +1167,7 @@ function draw(){
 
   // ═══════════ HUD (barras+kills · minimapa+bússola+chips · slots) ═══════════
   ctx.setTransform(1,0,0,1,0,0);
+  drawZoneFX();      // vinheta, seta pra safe e banner (embaixo do HUD)
   drawBars();
   drawMinimap();
   drawSlots();
