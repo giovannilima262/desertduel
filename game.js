@@ -1158,25 +1158,245 @@ function drawMinimap(){
   ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(-5.5,6); ctx.lineTo(0,2.5); ctx.lineTo(5.5,6);
   ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
-  // chips: zona + relógio + jogadores
-  const chH=32, chY=cy+ringOut+12;
-  // Label da zona
-  let zoneLabel = '', zoneIcon = '🌀';
-  if(zoneState==='waiting'){ zoneLabel = 'Safe '+(zoneNum+1)+'/'+MAX_ZONES+' '+Math.ceil(zoneTimer)+'s'; zoneIcon='📍'; }
-  else if(zoneState==='shrinking'){ zoneLabel = 'Fechando '+Math.ceil(zoneTimer)+'s'; zoneIcon='⏳'; }
-  else if(zoneState==='final'){ zoneLabel = 'Fechando '+Math.ceil(zoneTimer)+'s'; zoneIcon='💀'; }
-  if(zoneLabel) hudChip(cx+R-64-8-104-8-128, chY, 128, chH, zoneIcon, zoneLabel);
-  const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-  hudChip(cx+R-64, chY, 64, chH, '👤', '1');
-  hudChip(cx+R-64-8-104, chY, 104, chH, '🕐', mm+':'+ss);
+  // ═══════════ Painel BR abaixo do minimapa ═══════════
+  const panelW=172, panelX=cx-panelW/2, panelTop=cy+ringOut+14;
+  const inSafe = zoneCurrent && Math.hypot(player.x-zoneCurrent.cx, player.y-zoneCurrent.cy) <= zoneCurrent.r;
+
+  // Cores por estado da zona
+  let zAccent='#555', zGlow=null, zIcon=0, zTimer='', zProgress=0;
+  // zIcon: 0=shield, 1=warning, 2=hourglass, 3=fire, 4=skull
+  if(zoneState==='waiting'){
+    zAccent = inSafe ? '#22c55e' : '#eab308';
+    zGlow   = inSafe ? 'rgba(34,197,94,.25)' : 'rgba(234,179,8,.35)';
+    zIcon   = inSafe ? 0 : 1;
+    zTimer  = Math.ceil(zoneTimer)+'s';
+    zProgress = 1-zoneTimer/(zoneNum===0?30:ZONE_WAIT);
+  }else if(zoneState==='shrinking'){
+    zAccent = inSafe ? '#f97316' : '#ef4444';
+    zGlow   = inSafe ? 'rgba(249,115,22,.30)' : 'rgba(239,68,68,.40)';
+    zIcon   = inSafe ? 2 : 3;
+    zTimer  = Math.ceil(zoneTimer)+'s';
+    zProgress = 1-zoneTimer/zoneShrinkDur;
+  }else if(zoneState==='final'){
+    zAccent = '#dc2626';
+    zGlow   = 'rgba(220,38,38,.45)';
+    zIcon   = 4;
+    zTimer  = Math.ceil(zoneTimer)+'s';
+    zProgress = 1-zoneTimer/ZONE_FINAL;
+  }
+
+  // ── Fundo do painel (unifica os chips) ──
+  const panelH = (zoneState!=='idle'?108:0) + 46 + 42;  // zona + tempo + jogadores
+  ctx.fillStyle='rgba(8,14,12,.82)'; roundRect(panelX-4, panelTop-4, panelW+8, panelH+12, 12); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.10)'; ctx.lineWidth=1;
+  roundRect(panelX-4, panelTop-4, panelW+8, panelH+12, 12); ctx.stroke();
+  // Segundo traço interno sutil
+  ctx.strokeStyle='rgba(255,255,255,.04)'; ctx.lineWidth=1;
+  roundRect(panelX, panelTop, panelW, panelH+4, 10); ctx.stroke();
+
+  let py=panelTop+4;
+
+  // ═══ 1. CHIP ZONA ═══
+  if(zoneState!=='idle'){
+    const zh=104, zx=panelX+2, zw=panelW-4;
+    // Fundo com glow da cor de accent
+    ctx.fillStyle='rgba(12,20,16,.9)'; roundRect(zx, py, zw, zh, 9); ctx.fill();
+    if(zGlow){ ctx.fillStyle=zGlow; roundRect(zx, py, zw, zh, 9); ctx.fill(); }
+    // Borda
+    ctx.strokeStyle=zAccent; ctx.lineWidth=1.8; roundRect(zx, py, zw, zh, 9); ctx.stroke();
+    // Glow externo
+    ctx.save(); ctx.shadowColor=zAccent; ctx.shadowBlur=10;
+    ctx.strokeStyle=zAccent; ctx.lineWidth=1.2; roundRect(zx, py, zw, zh, 9); ctx.stroke();
+    ctx.restore();
+
+    // Barra de accent vertical (esquerda)
+    ctx.fillStyle=zAccent; roundRect(zx+4, py+8, 4, zh-16, 2); ctx.fill();
+
+    // Número da zona (grande, canto superior esquerdo)
+    ctx.fillStyle='rgba(255,255,255,.55)'; ctx.font='bold 10px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('ZONA', zx+16, py+10);
+    ctx.fillStyle='#fff'; ctx.font='bold 26px system-ui';
+    ctx.fillText((zoneNum+1)+'/'+MAX_ZONES, zx+16, py+24);
+
+    // Ícone de status (canto superior direito) — desenhado com Canvas
+    drawZoneIcon(zx+zw-24, py+26, zIcon, zAccent);
+
+    // Timer (contagem regressiva, bem grande)
+    ctx.fillStyle='#fff'; ctx.font='bold 28px system-ui';
+    ctx.textAlign='right'; ctx.textBaseline='top';
+    ctx.fillText(zTimer, zx+zw-14, py+36);
+
+    // Barra de progresso dupla (mais visível)
+    const barX=zx+14, barW=zw-28, barY=py+zh-16, barH=5;
+    // Track
+    ctx.fillStyle='rgba(0,0,0,.45)'; roundRect(barX, barY, barW, barH, barH/2); ctx.fill();
+    // Preenchimento com gradiente aproximado (2 partes)
+    const progW=barW*Math.min(1,Math.max(0,zProgress));
+    if(progW>1){
+      ctx.fillStyle=zAccent; roundRect(barX, barY, progW, barH, barH/2); ctx.fill();
+      // Brilho no topo da barra
+      ctx.fillStyle='rgba(255,255,255,.25)'; roundRect(barX, barY, progW, barH*0.45, barH/2); ctx.fill();
+    }
+
+    py+=zh+6;
+  }
+
+  // ═══ 2. CHIP TEMPO ═══
+  {
+    const th=42, tx=panelX+2, tw=panelW-4;
+    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(tx, py, tw, th, 8); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(tx, py, tw, th, 8); ctx.stroke();
+
+    const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
+    // Label
+    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 9px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText('TEMPO', tx+14, py+th/2-5);
+    // Tempo em mono grande
+    ctx.fillStyle='#fff'; ctx.font='bold 20px monospace';
+    ctx.textBaseline='middle';
+    ctx.fillText(mm+':'+ss, tx+14, py+th/2+9);
+    // Separador visual sutil
+    ctx.fillStyle='rgba(255,255,255,.06)'; ctx.fillRect(tx+68, py+8, 1, th-16);
+
+    // Ícone relógio simples (círculo + ponteiros)
+    const icx=tx+tw-22, icy=py+th/2;
+    ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.arc(icx, icy, 9, 0, 6.28); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx, icy-5); ctx.stroke();      // ponteiro min
+    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx+5, icy-1); ctx.stroke();     // ponteiro seg
+
+    py+=th+4;
+  }
+
+  // ═══ 3. CHIP JOGADORES ═══
+  {
+    const ph=38, px=panelX+2, pw=panelW-4;
+    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(px, py, pw, ph, 8); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(px, py, pw, ph, 8); ctx.stroke();
+
+    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 9px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText('VIVOS', px+14, py+ph/2-5);
+    ctx.fillStyle='#fff'; ctx.font='bold 18px system-ui';
+    ctx.fillText('1', px+14, py+ph/2+9);
+
+    // Ícone pessoa (desenhado)
+    const hx=px+pw-20, hy=py+ph/2;
+    ctx.strokeStyle='rgba(255,255,255,.45)'; ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.arc(hx, hy-5, 4, 0, 6.28); ctx.stroke();           // cabeça
+    ctx.beginPath(); ctx.arc(hx, hy+5, 6, Math.PI, 0); ctx.stroke();         // corpo (meio arco)
+    ctx.beginPath(); ctx.moveTo(hx, hy+5); ctx.lineTo(hx, hy+11); ctx.stroke(); // tronco
+  }
 }
-function hudChip(x,y,w,h,icone,txt){
-  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x,y,w,h,8); ctx.fill();
-  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(x,y,w,h,8); ctx.stroke();
-  ctx.font='15px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(icone, x+9, y+h/2+1);
-  ctx.fillStyle='#fff'; ctx.font='bold 15px system-ui';
-  ctx.fillText(txt, x+32, y+h/2+1);
+//── Ícones de status da zona (desenhados com Canvas) ──
+function drawZoneIcon(ix,iy,type,color){
+  ctx.save();
+  ctx.strokeStyle=color; ctx.fillStyle=color;
+  ctx.lineWidth=2; ctx.lineCap='round'; ctx.lineJoin='round';
+  const S=11; // raio base do ícone
+
+  if(type===0){       // ═══ SHIELD — escudo com checkmark ═══
+    // Escudo pontudo
+    ctx.fillStyle=color.replace(')',',.20)').replace('rgb','rgba');
+    ctx.beginPath();
+    ctx.moveTo(ix,iy-S-1);                              // topo
+    ctx.quadraticCurveTo(ix+S*1.1,iy-S*0.8, ix+S*1.1,iy-S*0.1);  // ombro direito
+    ctx.lineTo(ix+S*0.5,iy+S*0.6);                      // ponta direita baixa
+    ctx.quadraticCurveTo(ix+S*0.2,iy+S*0.3, ix,iy+S*0.9);         // curva inferior direita → ponta
+    ctx.quadraticCurveTo(ix-S*0.2,iy+S*0.3, ix-S*0.5,iy+S*0.6);   // ponta → curva inferior esquerda
+    ctx.lineTo(ix-S*1.1,iy-S*0.1);                      // ombro esquerdo
+    ctx.quadraticCurveTo(ix-S*1.1,iy-S*0.8, ix,iy-S-1);           // volta ao topo
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Checkmark interno
+    ctx.strokeStyle=color; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    ctx.moveTo(ix-5,iy); ctx.lineTo(ix-1,iy+4); ctx.lineTo(ix+6,iy-4);
+    ctx.stroke();
+  }else if(type===1){ // ═══ WARNING — triângulo com "!" em paths ═══
+    ctx.fillStyle=color.replace(')',',.20)').replace('rgb','rgba');
+    ctx.beginPath();
+    ctx.moveTo(ix,iy-S-1); ctx.lineTo(ix+S+1,iy+S); ctx.lineTo(ix-S-1,iy+S);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Exclamação (barra + ponto)
+    ctx.fillStyle=color; ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.roundRect(ix-2,iy-5,4,10,2); ctx.fill();      // barra vertical
+    ctx.beginPath(); ctx.arc(ix,iy+7,2.5,0,Math.PI*2); ctx.fill();      // ponto
+  }else if(type===2){ // ═══ HOURGLASS — ampulheta com grãos de areia ═══
+    ctx.fillStyle=color.replace(')',',.18)').replace('rgb','rgba');
+    // Corpo da ampulheta
+    ctx.beginPath();
+    ctx.moveTo(ix-S*0.8,iy-S-2); ctx.lineTo(ix+S*0.8,iy-S-2);   // topo largo
+    ctx.quadraticCurveTo(ix+S*0.3,iy-S*0.4, ix,iy);              // curva direita cima → centro
+    ctx.quadraticCurveTo(ix-S*0.3,iy+S*0.4, ix+S*0.8,iy+S);     // curva esquerda baixo → base
+    ctx.lineTo(ix-S*0.8,iy+S);
+    ctx.quadraticCurveTo(ix-S*0.3,iy+S*0.4, ix,iy);              // curva esquerda cima → centro
+    ctx.quadraticCurveTo(ix+S*0.3,iy-S*0.4, ix-S*0.8,iy-S-2);    // volta ao topo
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Grãos de areia na base (3 pontinhos)
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(ix-4,iy+S-3,1.6,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ix,iy+S-2,1.6,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ix+4,iy+S-3,1.6,0,Math.PI*2); ctx.fill();
+    // Linha fina no centro
+    ctx.strokeStyle=color; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(ix-S*0.5,iy); ctx.lineTo(ix+S*0.5,iy); ctx.stroke();
+  }else if(type===3){ // ═══ FIRE — chama com camada interna ═══
+    // Chama externa
+    ctx.fillStyle=color.replace(')',',.22)').replace('rgb','rgba');
+    ctx.beginPath();
+    ctx.moveTo(ix,iy-S-2);                                              // ponta superior
+    ctx.bezierCurveTo(ix+S*0.7,iy-S*0.9, ix+S*1.1,iy-S*0.4, ix+S,iy+S*0.3);   // curva direita alta
+    ctx.bezierCurveTo(ix+S*1.3,iy+S*0.9, ix+S*0.6,iy+S*0.8, ix+S*0.7,iy+S);    // lobo direito
+    ctx.bezierCurveTo(ix+S*0.3,iy+S*0.5, ix,iy+S*0.3, ix,iy);                  // centro-direita
+    ctx.bezierCurveTo(ix-S*0.3,iy+S*0.5, ix-S*0.7,iy+S*0.8, ix-S*0.7,iy+S);    // lobo esquerdo
+    ctx.bezierCurveTo(ix-S*1.3,iy+S*0.9, ix-S,iy+S*0.3, ix-S*0.8,iy-S*0.1);    // curva esquerda alta
+    ctx.bezierCurveTo(ix-S*0.7,iy-S*0.7, ix,iy-S-2, ix,iy-S-2);                // volta ao topo
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Chama interna (mais clara, menor)
+    ctx.fillStyle=color.replace(')',',.40)').replace('rgb','rgba');
+    ctx.beginPath();
+    ctx.moveTo(ix,iy-S*0.3);
+    ctx.bezierCurveTo(ix+S*0.35,iy-S*0.2, ix+S*0.5,iy+S*0.3, ix+S*0.2,iy+S*0.55);
+    ctx.bezierCurveTo(ix+S*0.1,iy+S*0.3, ix,iy+S*0.1, ix,iy-S*0.1);
+    ctx.bezierCurveTo(ix-S*0.2,iy+S*0.3, ix-S*0.5,iy+S*0.55, ix-S*0.5,iy+S*0.3);
+    ctx.bezierCurveTo(ix-S*0.35,iy-S*0.2, ix,iy-S*0.3, ix,iy-S*0.3);
+    ctx.closePath(); ctx.fill();
+  }else if(type===4){ // ═══ SKULL & CROSSBONES — caveira com ossos cruzados ═══
+    ctx.fillStyle=color.replace(')',',.20)').replace('rgb','rgba');
+    // Ossos cruzados (atrás)
+    ctx.lineWidth=3; ctx.strokeStyle=color;
+    ctx.beginPath(); ctx.moveTo(ix-S,iy-S*0.6); ctx.lineTo(ix+S,iy+S*0.8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ix+S,iy-S*0.6); ctx.lineTo(ix-S,iy+S*0.8); ctx.stroke();
+    // Bolinhas nas pontas dos ossos
+    ctx.fillStyle=color; ctx.lineWidth=1.5;
+    [{x:ix-S,y:iy-S*0.6},{x:ix+S,y:iy+S*0.8},{x:ix+S,y:iy-S*0.6},{x:ix-S,y:iy+S*0.8}].forEach(p=>{
+      ctx.beginPath(); ctx.arc(p.x,p.y,2.2,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    });
+    // Crânio
+    ctx.fillStyle=color.replace(')',',.22)').replace('rgb','rgba');
+    ctx.beginPath();
+    // Crânio em forma de pêra (não círculo perfeito)
+    ctx.arc(ix,iy-S*0.2,S*0.7,Math.PI,0);           // topo arredondado
+    ctx.quadraticCurveTo(ix+S*0.8,iy+S*0.2, ix+S*0.2,iy+S*0.65);  // bochecha direita
+    ctx.lineTo(ix-S*0.2,iy+S*0.65);                               // maxilar inferior
+    ctx.quadraticCurveTo(ix-S*0.8,iy+S*0.2, ix-S*0.7,iy-S*0.2);  // bochecha esquerda
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // Olhos (2 ovais escuros)
+    ctx.fillStyle='rgba(8,14,12,.85)';
+    ctx.beginPath(); ctx.ellipse(ix-3,iy-S*0.25,2.2,2.8,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(ix+3,iy-S*0.25,2.2,2.8,0,0,Math.PI*2); ctx.fill();
+    // Nariz (triângulo invertido)
+    ctx.fillStyle='rgba(8,14,12,.85)';
+    ctx.beginPath(); ctx.moveTo(ix-1.5,iy+S*0.1); ctx.lineTo(ix+1.5,iy+S*0.1); ctx.lineTo(ix,iy+S*0.3); ctx.closePath(); ctx.fill();
+    // Dentes (linha horizontal com traços verticais)
+    ctx.strokeStyle='rgba(8,14,12,.85)'; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.moveTo(ix-3,iy+S*0.45); ctx.lineTo(ix+3,iy+S*0.45); ctx.stroke();
+    for(let dx=-2;dx<=2;dx+=1.3){
+      ctx.beginPath(); ctx.moveTo(ix+dx,iy+S*0.45); ctx.lineTo(ix+dx,iy+S*0.6); ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 function hudSlot(x,y,num,ativo){
   ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x,y,96,78,12); ctx.fill();
