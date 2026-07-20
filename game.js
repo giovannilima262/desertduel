@@ -212,6 +212,7 @@ const keys={};
 addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true;
   if(e.key==='2' && state==='playing' && medkits>0 && player.hp<100){   // slot [2]: kit médico
     medkits--; player.hp=Math.min(100, player.hp+50); chestSound();
+    healAura = 1.5;                                      // aura verde de cura
   }
 });
 addEventListener('keyup',  e=>{ keys[e.key.toLowerCase()]=false; });
@@ -284,8 +285,7 @@ let fireCooldown = 0;       // time until next shot allowed
 let gunHeat = 0;            // calor da arma atual (0..1)
 let gunOverheat = false;    // travada fumegando até esfriar
 let overheatFlash = 0;      // pop visual do momento do estouro
-let steamParts = [];        // vapor saindo do cano {x,y,vx,vy,life,max,r}
-
+let healAura = 0;           // aura verde ao curar (0→desaparece)
 function moveAxis(nx,ny,horiz){
   const cc={c:Math.floor(player.x/MTILE), r:Math.floor(player.y/MTILE)};
   const fromVal=collAt(cc.c,cc.r);
@@ -379,7 +379,7 @@ function step(dt){
     gunHeat += clamp(w.rate*0.45, 0.03, 0.55);
     if(gunHeat >= 1){
       gunHeat = 1; gunOverheat = true; overheatFlash = 1.6;
-      overheatSound(); spawnSteam(14, true);
+      overheatSound();
     }
   }
   if(!mouse.down) fireLatch = false;
@@ -388,14 +388,8 @@ function step(dt){
   gunHeat = Math.max(0, gunHeat - dt*(gunOverheat ? 0.30 : 0.20));
   if(gunOverheat && gunHeat <= 0.30) gunOverheat = false;    // pronta de novo
   overheatFlash = Math.max(0, overheatFlash - dt);
-  if(gunHeat > 0.55 && Math.random() < (gunHeat-0.55)*dt*30) spawnSteam(1, false);
-  for(let i=steamParts.length-1; i>=0; i--){
-    const p=steamParts[i];
-    p.life += dt; p.x += p.vx*dt; p.y += p.vy*dt;
-    p.vy -= 26*dt;                                            // vapor sobe acelerando
-    p.vx *= Math.max(0, 1 - dt*2);
-    if(p.life >= p.max) steamParts.splice(i,1);
-  }
+  // ── Aura de cura ──
+  healAura = Math.max(0, healAura - dt);
   // Decay juice
   recoilForce += (0 - recoilForce) * Math.min(1, dt*18);
   shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
@@ -523,21 +517,6 @@ function overheatSound(){
   o.frequency.setValueAtTime(560,t); o.frequency.exponentialRampToValueAtTime(110,t+0.30);
   const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
   o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
-}
-function spawnSteam(n, burst){
-  // Vapor nasce na boca do cano da arma
-  const ang = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
-  const mx = player.x + Math.cos(ang)*SPR*0.55;
-  const my = player.y-6 + Math.sin(ang)*SPR*0.55;
-  for(let i=0;i<n;i++){
-    const sp = burst ? 14+Math.random()*22 : 4+Math.random()*8;
-    const a = burst ? Math.random()*Math.PI*2 : ang + (Math.random()-0.5)*0.8;
-    steamParts.push({
-      x: mx+(Math.random()-0.5)*4, y: my+(Math.random()-0.5)*4,
-      vx: Math.cos(a)*sp*0.6, vy: Math.sin(a)*sp*0.4 - 8,
-      life: 0, max: (burst?0.55:0.4)+Math.random()*0.45,
-      r: (burst?2:1.4)+Math.random()*1.6 });
-  }
 }
 function scatterChestLoot(b){
   const bx = b.c*MTILE+MTILE/2, by = b.r*MTILE+MTILE/2;
@@ -1218,11 +1197,21 @@ function draw(){
 	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
 	    ctx.stroke();
   }
-  // ── Vapor do cano superaquecido ──
-  for(const p of steamParts){
-    const k = p.life/p.max;
-    ctx.fillStyle = 'rgba(235,235,235,'+((1-k)*0.38).toFixed(3)+')';
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.r*(1+k*1.6), 0, 6.28); ctx.fill();
+  // ── Aura verde de cura ──
+  if(healAura > 0){
+    const t = performance.now()/1000;
+    const k = healAura/1.5;
+    // Anéis concêntricos pulsando
+    for(let ring=0;ring<3;ring++){
+      const ph = (t*0.8 + ring*0.33) % 1;
+      const rw = (k*1.2) * (0.55 + ph*0.45);
+      ctx.strokeStyle = 'rgba(143,209,50,'+((1-ph)*rw*0.55).toFixed(3)+')';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(player.x, player.y-4, SPR*0.7 + ph*SPR*0.55, 0, 6.28); ctx.stroke();
+    }
+    // Glow sutil ao redor
+    ctx.fillStyle = 'rgba(143,209,50,'+(0.08+0.06*Math.sin(t*5)).toFixed(3)+')';
+    ctx.beginPath(); ctx.arc(player.x, player.y-4, SPR*0.65, 0, 6.28); ctx.fill();
   }
   // ── Badge de superaquecimento flutuando na arma ──
   if(gunOverheat || overheatFlash>0){
@@ -1850,17 +1839,6 @@ function drawSlots(){
   ctx.globalAlpha = gunOverheat ? (0.55+0.45*Math.sin(T*10)) : 1;
   ctx.strokeStyle=hotBorder; ctx.lineWidth=2; roundRect(s1X,s1Y,s1W,s1H,12); ctx.stroke();
   ctx.restore();
-  // Fumacinhas subindo do slot enquanto está travada esfriando
-  if(gunOverheat){
-    for(let i=0;i<3;i++){
-      const ph=(T*0.9+i*0.37)%1;
-      ctx.save();
-      ctx.globalAlpha=(1-ph)*0.85;
-      ctx.font=(11+ph*9)+'px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('💨', s1X+s1W*0.28+i*s1W*0.24+Math.sin((T+i)*5)*3, s1Y-4-ph*26);
-      ctx.restore();
-    }
-  }
   keycap(s1X+7, s1Y+7, '1', true);
   // Sprite da arma (com bounce na troca)
   ctx.save();
@@ -1916,7 +1894,8 @@ function start(){
   loadLevel();
   elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=50;
   hpGhost=100; armorGhost=50;
-  gunHeat=0; gunOverheat=false; overheatFlash=0; steamParts=[];
+  gunHeat=0; gunOverheat=false; overheatFlash=0;
+  healAura=0;
   const s=findSpawn(), sv=collInfo(coll[s]);
   player.x=(s%COLS)*MTILE+MTILE/2; player.y=((s/COLS)|0)*MTILE+MTILE/2;
   player.L = (sv && sv.levels) ? sv.levels[0] : 0;
