@@ -263,6 +263,7 @@ let miniMap = null, miniBg = '#c99a63';     // offscreen 1px/célula + cor domin
 let zoneState = 'idle', zoneTimer = 0, zoneDmgTimer = 0, zoneNum = 0;   // idle|waiting|shrinking
 let zoneCurrent = null, zoneNext = null;      // {cx,cy,r} em px (world coords)
 let zoneShrinkFrom = null;                   // estado da zona no início do shrink
+let zoneShrinkDur = ZONE_SHRINK;             // duração real do shrink atual (normal ou fast)
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -657,16 +658,16 @@ function updateZone(dt){
     }
     // Começa a fechar — guarda estado inicial pra interpolar
     zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
-    const fast = zoneNum >= MAX_ZONES - 4;                    // últimas 3 zonas fecham mais rápido
-    zoneState = 'shrinking'; zoneTimer = fast ? ZONE_SHRINK_FAST : ZONE_SHRINK;
+    zoneShrinkDur = zoneNum >= MAX_ZONES - 4 ? ZONE_SHRINK_FAST : ZONE_SHRINK;
+    zoneState = 'shrinking'; zoneTimer = zoneShrinkDur;
   } else if(zoneState==='final'){
     // Fechamento derradeiro: raio vai até ~1 tile
     const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
     zoneCurrent.r = zoneShrinkFrom.r * (1 - t*t);  // ease-in quadrático até zero
     if(zoneTimer <= 0){ zoneTimer = 0; zoneCurrent.r = MTILE*0.5; } // trava no zero
   } else if(zoneState==='shrinking'){
-    const t = clamp(1 - zoneTimer/ZONE_SHRINK, 0, 1);  // 0→1 com ease-in
-    const ease = t*t;
+    const t = clamp(1 - zoneTimer/zoneShrinkDur, 0, 1);  // 0→1 smoothstep
+    const ease = t*t*(3 - 2*t);                          // suave no início e no fim
     zoneCurrent.cx = zoneShrinkFrom.cx + (zoneNext.cx - zoneShrinkFrom.cx)*ease;
     zoneCurrent.cy = zoneShrinkFrom.cy + (zoneNext.cy - zoneShrinkFrom.cy)*ease;
     zoneCurrent.r  = zoneShrinkFrom.r  + (zoneNext.r  - zoneShrinkFrom.r)*ease;
@@ -710,22 +711,22 @@ function drawZoneOverlay(){
   ctx.fill('evenodd');
   // Borda da zona atual (parede da tempestade)
   const borderColors = {
-    waiting:   ['rgba(80,180,255,0.9)',  'rgba(80,160,255,0.3)'],
-    shrinking: ['rgba(255,140,80,0.95)', 'rgba(255,100,40,0.35)'],
-    final:     ['rgba(255,60,40,0.95)',  'rgba(255,30,20,0.4)'],
+    waiting:   ['rgba(255,70,50,0.9)',  'rgba(255,50,30,0.3)'],
+    shrinking: ['rgba(255,50,30,0.95)', 'rgba(255,30,15,0.4)'],
+    final:     ['rgba(255,30,10,0.95)', 'rgba(255,15,5,0.5)'],
   };
   const bc = borderColors[zoneState] || borderColors.waiting;
   if(!(zoneState==='final' && zoneCurrent.r <= MTILE)){  // some quando fecha tudo
     ctx.beginPath();
     ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2);
     ctx.strokeStyle = bc[0];
-    ctx.lineWidth = zoneState==='shrinking' ? 5 : 4;
+    ctx.lineWidth = zoneState==='shrinking' ? 2.5 : 2;
     ctx.stroke();
     // Borda externa glow
     ctx.beginPath();
-    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r+6, 0, Math.PI*2);
+    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r+4, 0, Math.PI*2);
     ctx.strokeStyle = bc[1];
-    ctx.lineWidth = 14;
+    ctx.lineWidth = 8;
     ctx.stroke();
   }
   // Próxima safe (preview) — visível durante espera E fechamento
@@ -743,7 +744,7 @@ function drawZoneOverlay(){
 function drawZoneOnMinimap(cx, cy, z){
   if(!zoneCurrent) return;
   // Zona atual
-  const mmColors = {waiting:'rgba(80,180,255,0.8)', shrinking:'rgba(255,140,80,0.9)', final:'rgba(255,50,30,0.9)'};
+  const mmColors = {waiting:'rgba(255,70,50,0.8)', shrinking:'rgba(255,50,30,0.9)', final:'rgba(255,30,10,0.9)'};
   ctx.beginPath();
   ctx.arc(cx + (zoneCurrent.cx/MTILE - player.x/MTILE)*z, cy + (zoneCurrent.cy/MTILE - player.y/MTILE)*z,
     zoneCurrent.r/MTILE*z, 0, Math.PI*2);
