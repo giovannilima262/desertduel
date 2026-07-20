@@ -78,6 +78,17 @@ function loadLevel(){
       const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) break;
       mmc.drawImage(img, t[1]*s[1], t[2]*s[1], s[1], s[1], c, r, 1, 1); break; }
   }
+  // Cor dominante do minimapa — usada como fundo quando player chega nas bordas
+  {
+    const data = mmc.getImageData(0, 0, COLS, ROWS).data;
+    const freq = {}; let best = '#c99a63', bestN = 0;
+    for (let p = 0; p < data.length; p += 4) {
+      const hex = '#' + [data[p], data[p+1], data[p+2]].map(v => v.toString(16).padStart(2, '0')).join('');
+      freq[hex] = (freq[hex] || 0) + 1;
+      if (freq[hex] > bestN) { bestN = freq[hex]; best = hex; }
+    }
+    miniBg = best;
+  }
   // Baús bloqueiam balas e player — sempre viram block
   for(const b of chests){
     coll[b.r * COLS + b.c] = 1;
@@ -239,7 +250,7 @@ let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open
 let kills = 0;                      // abates (bots ainda não existem — já fica pronto)
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
-let miniMap = null;                 // offscreen 1px/célula gerado no loadLevel
+let miniMap = null, miniBg = '#c99a63';     // offscreen 1px/célula + cor dominante
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -903,7 +914,7 @@ function drawMinimap(){
   const R=64, cx=VW-R-28, cy=R+26;
   ctx.save();
   ctx.beginPath(); ctx.arc(cx,cy,R,0,6.28); ctx.clip();
-  ctx.fillStyle='#20302a'; ctx.fillRect(cx-R,cy-R,R*2,R*2);
+  ctx.fillStyle=miniBg; ctx.fillRect(cx-R,cy-R,R*2,R*2);
   if(miniMap){
     const z=3, pc=player.x/MTILE, pr=player.y/MTILE;
     ctx.imageSmoothingEnabled=false;
