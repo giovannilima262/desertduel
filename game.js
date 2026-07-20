@@ -707,7 +707,7 @@ function drawZoneOverlay(){
     ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2, true);
   }
   ctx.closePath();
-  ctx.fillStyle = 'rgba(25,10,8,0.55)';
+  ctx.fillStyle = 'rgba(80,15,10,0.50)';
   ctx.fill('evenodd');
   // Borda da zona atual (parede da tempestade)
   const borderColors = {
@@ -1094,6 +1094,17 @@ function drawMinimap(){
       ctx.fillRect(cx+(b.c+0.5-pc)*z-2, cy+(b.r+0.5-pr)*z-2, 4, 4); }
     // Zonas no minimapa
     drawZoneOnMinimap(cx, cy, z);
+    // Overlay avermelhado fora da safe no minimapa
+    if(zoneCurrent && zoneState!=='idle'){
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cx-R, cy-R, R*2, R*2);
+      ctx.arc(cx + (zoneCurrent.cx/MTILE-pc)*z, cy + (zoneCurrent.cy/MTILE-pr)*z,
+        zoneCurrent.r/MTILE*z, 0, Math.PI*2, true);
+      ctx.fillStyle = 'rgba(80,15,10,0.45)';
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
   }
   ctx.restore();
   ctx.strokeStyle='rgba(235,240,238,.55)'; ctx.lineWidth=3;
