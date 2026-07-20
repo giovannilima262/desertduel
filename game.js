@@ -14,8 +14,9 @@ const PLAYER_R = MTILE * 0.34;     // mesmo raio de colisão do editor
 
 //======================= ZONAS (Fortnite-style) =======================
 const MAX_ZONES    = 10;             // total de zonas na partida
-const ZONE_WAIT    = 75;             // 75s entre safes
-const ZONE_SHRINK  = 20;             // 20s fechando
+const ZONE_WAIT    = 48;             // 48s entre safes
+const ZONE_SHRINK  = 14;             // 14s fechando normal
+const ZONE_SHRINK_FAST = 7;          // 7s fechando nas últimas 3
 const ZONE_FINAL   = 30;             // 30s fechamento final até zero
 const ZONE_DMG_TICK = 1.0;           // intervalo de dano fora da zona
 const ZONE_BASE_DMG = 2;             // dano base por tick (escala com o nº da zona)
@@ -656,7 +657,8 @@ function updateZone(dt){
     }
     // Começa a fechar — guarda estado inicial pra interpolar
     zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
-    zoneState = 'shrinking'; zoneTimer = ZONE_SHRINK;
+    const fast = zoneNum >= MAX_ZONES - 4;                    // últimas 3 zonas fecham mais rápido
+    zoneState = 'shrinking'; zoneTimer = fast ? ZONE_SHRINK_FAST : ZONE_SHRINK;
   } else if(zoneState==='final'){
     // Fechamento derradeiro: raio vai até ~1 tile
     const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
@@ -683,7 +685,8 @@ function updateZone(dt){
       zoneDmgTimer += dt;
       if(zoneDmgTimer >= ZONE_DMG_TICK){
         zoneDmgTimer -= ZONE_DMG_TICK;
-        player.hp -= ZONE_BASE_DMG + zoneNum;
+        const dmg = zoneNum < 5 ? 1 : 1 + (zoneNum - 4);  // 1 até zona 6, depois escala
+        player.hp -= dmg;
         if(player.hp <= 0){ player.hp = 0; /* morte depois */ }
       }
     } else {
