@@ -259,6 +259,7 @@ let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open
 let kills = 0;                      // abates (bots ainda não existem — já fica pronto)
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
+let hpGhost = 100, armorGhost = 50; // trilha "fantasma" das barras (dano recente escorre)
 let miniMap = null, miniBg = '#c99a63';     // offscreen 1px/célula + cor dominante
 let zoneState = 'idle', zoneTimer = 0, zoneDmgTimer = 0, zoneNum = 0;   // idle|waiting|shrinking
 let zoneCurrent = null, zoneNext = null;      // {cx,cy,r} em px (world coords)
@@ -279,6 +280,11 @@ let smoke = [];             // pegadas no chão
 let footprintDist = 0;       // distância acumulada para spawn de pegada
 let shakePhase = 0;          // screen shake damped oscillation
 let fireCooldown = 0;       // time until next shot allowed
+// ── SUPERAQUECIMENTO: atirar esquenta o cano; estourou = trava até esfriar ──
+let gunHeat = 0;            // calor da arma atual (0..1)
+let gunOverheat = false;    // travada fumegando até esfriar
+let overheatFlash = 0;      // pop visual do momento do estouro
+let steamParts = [];        // vapor saindo do cano {x,y,vx,vy,life,max,r}
 
 function moveAxis(nx,ny,horiz){
   const cc={c:Math.floor(player.x/MTILE), r:Math.floor(player.y/MTILE)};
@@ -296,6 +302,9 @@ function moveAxis(nx,ny,horiz){
 function step(dt){
   elapsedT += dt;
   updateZone(dt);
+  // Trilha fantasma das barras: cura acompanha na hora, dano escorre devagar
+  hpGhost    = player.hp    > hpGhost    ? player.hp    : Math.max(player.hp,    hpGhost    - dt*30);
+  armorGhost = player.armor > armorGhost ? player.armor : Math.max(player.armor, armorGhost - dt*30);
   let dx=0,dy=0;
   if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
   if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
@@ -324,6 +333,7 @@ function step(dt){
     const it=gunItems[curOverlap];
     const old=gun; gun=it.t; it.t=old;                 // swap — a antiga fica no chão
     fireCooldown=0; fireLatch=false;
+    gunHeat=0; gunOverheat=false;                      // arma do chão tá fria — trocar esfria!
     pickupSound();
     // Animação de troca: bounce de escala
     swapAnim={t:0, total:0.18};
@@ -361,13 +371,31 @@ function step(dt){
   const aimAng = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
   const wpd = SPR*0.35 - recoilForce;
   const weaponOnBridge = spriteOverlapsBridge(player.x + Math.cos(aimAng)*wpd, player.y-6 + Math.sin(aimAng)*wpd, player.L);
-  if(mouse.down && fireCooldown <= 0 && state=="playing" && !weaponOnBridge && (w.auto || !fireLatch)){
+  if(mouse.down && fireCooldown <= 0 && !gunOverheat && state=="playing" && !weaponOnBridge && (w.auto || !fireLatch)){
     fireCooldown = w.rate;
     fireLatch = true;
     shoot();
+    // Esquenta: rajada contínua estoura em ~4s (escala com a cadência da arma)
+    gunHeat += clamp(w.rate*0.45, 0.03, 0.55);
+    if(gunHeat >= 1){
+      gunHeat = 1; gunOverheat = true; overheatFlash = 1.6;
+      overheatSound(); spawnSteam(14, true);
+    }
   }
   if(!mouse.down) fireLatch = false;
   flashT = Math.max(0, flashT - dt);
+  // ── Resfriamento + vapor do cano ──
+  gunHeat = Math.max(0, gunHeat - dt*(gunOverheat ? 0.30 : 0.20));
+  if(gunOverheat && gunHeat <= 0.30) gunOverheat = false;    // pronta de novo
+  overheatFlash = Math.max(0, overheatFlash - dt);
+  if(gunHeat > 0.55 && Math.random() < (gunHeat-0.55)*dt*30) spawnSteam(1, false);
+  for(let i=steamParts.length-1; i>=0; i--){
+    const p=steamParts[i];
+    p.life += dt; p.x += p.vx*dt; p.y += p.vy*dt;
+    p.vy -= 26*dt;                                            // vapor sobe acelerando
+    p.vx *= Math.max(0, 1 - dt*2);
+    if(p.life >= p.max) steamParts.splice(i,1);
+  }
   // Decay juice
   recoilForce += (0 - recoilForce) * Math.min(1, dt*18);
   shakePhase = Math.max(0, shakePhase - dt*22);  // fast damped oscillation
@@ -477,6 +505,39 @@ function chestSound(){
     g.gain.exponentialRampToValueAtTime(0.09,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.18);
     o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.2);
   });
+}
+function overheatSound(){
+  // "PSSSHHH" de vapor pressurizado + tom descendo (arma desligando)
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  const len=0.55, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.45));
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.09,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const hp=audioCtx.createBiquadFilter(); hp.type='highpass';
+  hp.frequency.setValueAtTime(3600,t); hp.frequency.exponentialRampToValueAtTime(1200,t+len);
+  src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+  src.start(t); src.stop(t+len);
+  const o=audioCtx.createOscillator(); o.type='triangle';
+  o.frequency.setValueAtTime(560,t); o.frequency.exponentialRampToValueAtTime(110,t+0.30);
+  const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
+  o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
+}
+function spawnSteam(n, burst){
+  // Vapor nasce na boca do cano da arma
+  const ang = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
+  const mx = player.x + Math.cos(ang)*SPR*0.55;
+  const my = player.y-6 + Math.sin(ang)*SPR*0.55;
+  for(let i=0;i<n;i++){
+    const sp = burst ? 14+Math.random()*22 : 4+Math.random()*8;
+    const a = burst ? Math.random()*Math.PI*2 : ang + (Math.random()-0.5)*0.8;
+    steamParts.push({
+      x: mx+(Math.random()-0.5)*4, y: my+(Math.random()-0.5)*4,
+      vx: Math.cos(a)*sp*0.6, vy: Math.sin(a)*sp*0.4 - 8,
+      life: 0, max: (burst?0.55:0.4)+Math.random()*0.45,
+      r: (burst?2:1.4)+Math.random()*1.6 });
+  }
 }
 function scatterChestLoot(b){
   const bx = b.c*MTILE+MTILE/2, by = b.r*MTILE+MTILE/2;
@@ -991,6 +1052,16 @@ function draw(){
 	    // começa pequeno, cresce com overshoot
 	    if(swapAnim){ const bt=swapAnim.t/swapAnim.total; const bs=0.5+0.5*bt+Math.sin(bt*Math.PI)*0.3*(1-bt); ctx.scale(bs,bs); }
 	    ctx.drawImage(IMG.weapons, _wDef.spr*SPR, 0*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	    // Cano incandescente conforme esquenta
+	    if(gunHeat > 0.35){
+	      const gh=(gunHeat-0.35)/0.65, fl=0.75+0.25*Math.sin(performance.now()/40);
+	      ctx.globalCompositeOperation='lighter';
+	      const gg=ctx.createRadialGradient(SPR*0.30,0,0, SPR*0.30,0,7);
+	      gg.addColorStop(0,'rgba(255,120,40,'+(0.55*gh*fl).toFixed(3)+')');
+	      gg.addColorStop(1,'rgba(255,60,20,0)');
+	      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(SPR*0.30,0,7,0,6.28); ctx.fill();
+	      ctx.globalCompositeOperation='source-over';
+	    }
 	    ctx.restore();
 	    if(flashT > 0){
 	      const fs = _wDef.flash * 6;
@@ -1147,6 +1218,39 @@ function draw(){
 	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
 	    ctx.stroke();
   }
+  // ── Vapor do cano superaquecido ──
+  for(const p of steamParts){
+    const k = p.life/p.max;
+    ctx.fillStyle = 'rgba(235,235,235,'+((1-k)*0.38).toFixed(3)+')';
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r*(1+k*1.6), 0, 6.28); ctx.fill();
+  }
+  // ── Badge de superaquecimento flutuando na arma ──
+  if(gunOverheat || overheatFlash>0){
+    const Tb = performance.now()/1000;
+    const bAng = Math.atan2(mouse.wy-(player.y-6), mouse.wx-player.x);
+    const bwx = player.x + Math.cos(bAng)*SPR*0.35;
+    const bwy = player.y-6 + Math.sin(bAng)*SPR*0.35;
+    const k = overheatFlash/1.6;
+    const pop = overheatFlash>0 ? 1+Math.sin((1-k)*Math.PI)*0.35 : 1;
+    ctx.save();
+    ctx.translate(bwx, bwy - 13 + Math.sin(Tb*3)*1.2);
+    ctx.scale(pop, pop);
+    if(overheatFlash>0) ctx.rotate(Math.sin(Tb*14)*0.10);
+    ctx.globalAlpha = gunOverheat ? 1 : Math.min(1, k*3);
+    // Anel de pulso enquanto está travada
+    if(gunOverheat){
+      ctx.strokeStyle='rgba(255,90,42,'+(0.6+0.4*Math.sin(Tb*8)).toFixed(3)+')';
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(0,0,6.8+Math.sin(Tb*8)*0.8,0,6.28); ctx.stroke();
+    }
+    ctx.fillStyle='#d92c1f';
+    ctx.beginPath(); ctx.arc(0,0,5.5,0,6.28); ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.arc(0,0,5.5,0,6.28); ctx.stroke();
+    tinyFlame(0, 0.6, 2.8, '#fff', Math.sin(Tb*20));
+    ctx.restore();
+    ctx.globalAlpha=1;
+  }
   // ── Seta acima do player (na frente de tudo) ──
   const ax = player.x, ay = player.y - SPR*0.7;
   const s = MTILE*0.16;
@@ -1180,34 +1284,123 @@ function draw(){
 }
 
 //======================= HUD (layout novo) =======================
-function hudBar(x,y,w,h,val,max,cor,icone,corBadge){
-  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x+h*0.5,y,w,h,h/2); ctx.fill();
-  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(x+h*0.5,y,w,h,h/2); ctx.stroke();
-  const pad=3, fw=(w-pad*2)*Math.max(0,Math.min(1,val/max));
-  if(fw>3){ ctx.fillStyle=cor; roundRect(x+h*0.5+pad,y+pad,fw,h-pad*2,(h-pad*2)/2); ctx.fill();
-    ctx.fillStyle='rgba(255,255,255,.20)'; roundRect(x+h*0.5+pad,y+pad,fw,(h-pad*2)*0.45,(h-pad*2)/2); ctx.fill(); }
-  ctx.fillStyle='#fff'; ctx.font='bold '+Math.round(h*0.5)+'px system-ui';
-  ctx.textAlign='right'; ctx.textBaseline='middle';
-  ctx.fillText((val|0)+'/'+max, x+h*0.5+w-12, y+h/2+1);
-  const bx=x+h*0.25, by=y+h/2;                                 // badge circular à esquerda
-  ctx.fillStyle='#0f1d18'; ctx.beginPath(); ctx.arc(bx,by,h*0.72,0,6.28); ctx.fill();
-  ctx.strokeStyle=corBadge; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(bx,by,h*0.72,0,6.28); ctx.stroke();
-  ctx.fillStyle=corBadge; ctx.font='bold '+Math.round(h*0.8)+'px system-ui'; ctx.textAlign='center';
-  ctx.fillText(icone, bx, by+1);
+// Barra inclinada (paralelogramo) — visual moderno de BR
+function slantBar(x,y,w,h,s){
+  ctx.beginPath();
+  ctx.moveTo(x+s, y); ctx.lineTo(x+w+s, y);
+  ctx.lineTo(x+w, y+h); ctx.lineTo(x, y+h);
+  ctx.closePath();
+}
+//── Ícones pequenos desenhados (coração e escudo) ──
+function tinyHeart(x,y,s,color){
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(x, y+s*0.9);
+  ctx.bezierCurveTo(x-s, y+s*0.1, x-s*0.9, y-s*0.8, x, y-s*0.15);
+  ctx.bezierCurveTo(x+s*0.9, y-s*0.8, x+s, y+s*0.1, x, y+s*0.9);
+  ctx.fill();
+}
+function tinyShield(x,y,s,color){
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(x, y-s);
+  ctx.quadraticCurveTo(x+s, y-s*0.7, x+s, y-s*0.05);
+  ctx.quadraticCurveTo(x+s, y+s*0.55, x, y+s);
+  ctx.quadraticCurveTo(x-s, y+s*0.55, x-s, y-s*0.05);
+  ctx.quadraticCurveTo(x-s, y-s*0.7, x, y-s);
+  ctx.fill();
+}
+//── Barra de status com trilha fantasma de dano e segmentos ──
+function vitalBar(x,y,w,h,val,ghost,max,c1,c2,slant){
+  // Track
+  slantBar(x,y,w,h,slant); ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fill();
+  // Fantasma (dano recente escorrendo)
+  const gw=w*clamp(ghost/max,0,1), fw=w*clamp(val/max,0,1);
+  if(gw>fw+0.5){ slantBar(x+fw,y,gw-fw,h,slant); ctx.fillStyle='rgba(255,255,255,.55)'; ctx.fill(); }
+  // Preenchimento com gradiente
+  if(fw>1){
+    const g=ctx.createLinearGradient(x,y,x,y+h);
+    g.addColorStop(0,c1); g.addColorStop(1,c2);
+    slantBar(x,y,fw,h,slant); ctx.fillStyle=g; ctx.fill();
+    // Brilho no topo
+    slantBar(x,y,fw,h*0.42,slant*0.55); ctx.fillStyle='rgba(255,255,255,.22)'; ctx.fill();
+  }
+  // Segmentos (25 em 25)
+  ctx.strokeStyle='rgba(0,0,0,.45)'; ctx.lineWidth=1.5;
+  for(let i=1;i<4;i++){
+    const sx=x+w*i/4;
+    ctx.beginPath(); ctx.moveTo(sx+slant,y); ctx.lineTo(sx,y+h); ctx.stroke();
+  }
+  // Contorno
+  slantBar(x,y,w,h,slant); ctx.strokeStyle='rgba(255,255,255,.28)'; ctx.lineWidth=1; ctx.stroke();
 }
 function drawBars(){
-  const X=22, Y=20, W=280, H=26;
-  hudBar(X, Y, W, H, player.hp, 100, '#e33b2f', '♥', '#e8483a');
-  hudBar(X, Y+H+12, W*0.76, H*0.88, player.armor, 100, '#8fd132', '✚', '#79bd22');
-  const kY=Y+H+12+H*0.88+14, kW=128, kH=52;                    // painel KILLS
-  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(X,kY,kW,kH,10); ctx.fill();
-  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(X,kY,kW,kH,10); ctx.stroke();
-  ctx.font='24px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText('💀', X+12, kY+kH/2+1);
-  ctx.fillStyle='rgba(220,230,225,.75)'; ctx.font='bold 11px system-ui';
-  ctx.fillText('KILLS', X+50, kY+16);
-  ctx.fillStyle='#fff'; ctx.font='bold 20px system-ui';
-  ctx.fillText(''+kills, X+50, kY+37);
+  const T=performance.now()/1000;
+  // ═══ Cartão de vitais (canto inferior esquerdo) ═══
+  const W=332, H=88, X=20, Y=VH-H-18;
+  const lowHp = player.hp<=30;
+  ctx.save();
+  // Painel
+  const pg=ctx.createLinearGradient(X,Y,X,Y+H);
+  pg.addColorStop(0,'rgba(14,22,18,.86)'); pg.addColorStop(1,'rgba(8,13,11,.92)');
+  ctx.fillStyle=pg; roundRect(X,Y,W,H,14); ctx.fill();
+  ctx.strokeStyle= lowHp ? 'rgba(255,60,40,'+(0.45+0.35*Math.sin(T*6)).toFixed(3)+')' : 'rgba(255,255,255,.14)';
+  ctx.lineWidth=lowHp?2:1.2; roundRect(X,Y,W,H,14); ctx.stroke();
+  // Avatar circular (sprite do player)
+  const acx=X+44, acy=Y+H/2, ar=30;
+  ctx.fillStyle='#0d1714'; ctx.beginPath(); ctx.arc(acx,acy,ar,0,6.28); ctx.fill();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(acx,acy,ar-1.5,0,6.28); ctx.clip();
+  if(IMG.players){
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(IMG.players, 0, (player.skin||0)*SPR, SPR, SPR, acx-33, acy-30, 66, 66);
+  }
+  ctx.restore();
+  ctx.strokeStyle='#f2c14e'; ctx.lineWidth=2.5;
+  ctx.beginPath(); ctx.arc(acx,acy,ar,0,6.28); ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,0,.5)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(acx,acy,ar+2,0,6.28); ctx.stroke();
+  // Barras à direita do avatar
+  const bx=X+96, bw=W-96-70, sl=5;
+  // Colete (fina, em cima)
+  tinyShield(bx-13, Y+25, 7, '#8fd132');
+  vitalBar(bx, Y+18, bw*0.82, 12, player.armor, armorGhost, 100, '#a5e04a', '#69a91f', sl);
+  ctx.fillStyle='#cfe8b0'; ctx.font='bold 12px system-ui';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(''+(player.armor|0), bx+bw*0.82+12, Y+25);
+  // HP (grossa, embaixo)
+  tinyHeart(bx-13, Y+52, 7.5, lowHp?'#ff6a55':'#ff5a4a');
+  vitalBar(bx, Y+44, bw, 19, player.hp, hpGhost, 100,
+    lowHp?'#ff7a5a':'#ff6448', lowHp?'#d92c1f':'#cf3322', sl);
+  // Número grande de HP
+  const hpTxt=''+(player.hp|0);
+  ctx.fillStyle = lowHp ? '#ff8d75' : '#fff';
+  ctx.font='bold 26px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(hpTxt, bx+bw+14, Y+53);
+  const hpW=ctx.measureText(hpTxt).width;
+  ctx.fillStyle='rgba(255,255,255,.4)'; ctx.font='bold 12px system-ui';
+  ctx.fillText('/100', bx+bw+16+hpW, Y+56);
+  // Label
+  ctx.fillStyle='rgba(255,255,255,.35)'; ctx.font='bold 9px system-ui';
+  ctx.fillText('COLETE', bx, Y+9);
+  ctx.restore();
+  // Pulso vermelho na tela com HP baixo
+  if(lowHp && player.hp>0){
+    const a=(0.10+0.08*Math.sin(T*6))*(1-player.hp/30);
+    const g=ctx.createRadialGradient(VW/2,VH/2,Math.min(VW,VH)*0.35, VW/2,VH/2,Math.max(VW,VH)*0.60);
+    g.addColorStop(0,'rgba(180,20,10,0)'); g.addColorStop(1,'rgba(180,20,10,'+a.toFixed(3)+')');
+    ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  }
+  // ═══ Chip de abates (topo esquerdo, compacto) ═══
+  const kW=104, kH=38, kX=20, kY=18;
+  ctx.fillStyle='rgba(10,16,14,.80)'; roundRect(kX,kY,kW,kH,19); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.12)'; ctx.lineWidth=1; roundRect(kX,kY,kW,kH,19); ctx.stroke();
+  ctx.font='18px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('💀', kX+12, kY+kH/2+1);
+  ctx.fillStyle='#fff'; ctx.font='bold 18px system-ui';
+  ctx.fillText(''+kills, kX+40, kY+kH/2+1);
+  ctx.fillStyle='rgba(255,255,255,.40)'; ctx.font='bold 9px system-ui';
+  ctx.fillText('ABATES', kX+40+(kills>9?26:16), kY+kH/2+2);
 }
 function drawMinimap(){
   const R=64, cx=VW-R-28, cy=R+26;
@@ -1288,135 +1481,157 @@ function drawMinimap(){
   ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
   // ═══════════ Painel BR abaixo do minimapa ═══════════
+  const T=performance.now()/1000;
   const panelW=172, panelX=cx-panelW/2, panelTop=cy+ringOut+14;
   const inSafe = zoneCurrent && Math.hypot(player.x-zoneCurrent.cx, player.y-zoneCurrent.cy) <= zoneCurrent.r;
 
   // Cores por estado da zona
-  let zAccent='#555', zGlow=null, zIcon=0, zTimer='', zProgress=0;
+  let zAccent='#555', zGlow=null, zIcon=0, zProgress=0, zUrgent=false;
   // zIcon: 0=shield, 1=warning, 2=hourglass, 3=fire, 4=skull
   if(zoneState==='waiting'){
     zAccent = inSafe ? '#22c55e' : '#eab308';
     zGlow   = inSafe ? 'rgba(34,197,94,.25)' : 'rgba(234,179,8,.35)';
     zIcon   = inSafe ? 0 : 1;
-    zTimer  = Math.ceil(zoneTimer)+'s';
     zProgress = 1-zoneTimer/(zoneNum===0?30:ZONE_WAIT);
+    zUrgent = zoneTimer<=10;
   }else if(zoneState==='shrinking'){
     zAccent = inSafe ? '#f97316' : '#ef4444';
     zGlow   = inSafe ? 'rgba(249,115,22,.30)' : 'rgba(239,68,68,.40)';
     zIcon   = inSafe ? 2 : 3;
-    zTimer  = Math.ceil(zoneTimer)+'s';
     zProgress = 1-zoneTimer/zoneShrinkDur;
+    zUrgent = true;
   }else if(zoneState==='final'){
     zAccent = '#dc2626';
     zGlow   = 'rgba(220,38,38,.45)';
     zIcon   = 4;
-    zTimer  = Math.ceil(zoneTimer)+'s';
     zProgress = 1-zoneTimer/ZONE_FINAL;
+    zUrgent = true;
   }
 
-  // ── Fundo do painel (unifica os chips) ──
-  const panelH = (zoneState!=='idle'?108:0) + 46 + 42;  // zona + tempo + jogadores
-  ctx.fillStyle='rgba(8,14,12,.82)'; roundRect(panelX-4, panelTop-4, panelW+8, panelH+12, 12); ctx.fill();
+  // ── Fundo do painel (unifica tudo) ──
+  const zoneOn = zoneState!=='idle';
+  const zoneH=96, tilesH=46;
+  const panelH = (zoneOn ? zoneH+6 : 0) + tilesH;
+  ctx.fillStyle='rgba(8,14,12,.82)'; roundRect(panelX-4, panelTop-4, panelW+8, panelH+8, 12); ctx.fill();
   ctx.strokeStyle='rgba(255,255,255,.10)'; ctx.lineWidth=1;
-  roundRect(panelX-4, panelTop-4, panelW+8, panelH+12, 12); ctx.stroke();
-  // Segundo traço interno sutil
-  ctx.strokeStyle='rgba(255,255,255,.04)'; ctx.lineWidth=1;
-  roundRect(panelX, panelTop, panelW, panelH+4, 10); ctx.stroke();
+  roundRect(panelX-4, panelTop-4, panelW+8, panelH+8, 12); ctx.stroke();
 
-  let py=panelTop+4;
+  let py=panelTop;
 
-  // ═══ 1. CHIP ZONA ═══
-  if(zoneState!=='idle'){
-    const zh=104, zx=panelX+2, zw=panelW-4;
-    // Fundo com glow da cor de accent
-    ctx.fillStyle='rgba(12,20,16,.9)'; roundRect(zx, py, zw, zh, 9); ctx.fill();
-    if(zGlow){ ctx.fillStyle=zGlow; roundRect(zx, py, zw, zh, 9); ctx.fill(); }
-    // Borda
-    ctx.strokeStyle=zAccent; ctx.lineWidth=1.8; roundRect(zx, py, zw, zh, 9); ctx.stroke();
-    // Glow externo
-    ctx.save(); ctx.shadowColor=zAccent; ctx.shadowBlur=10;
-    ctx.strokeStyle=zAccent; ctx.lineWidth=1.2; roundRect(zx, py, zw, zh, 9); ctx.stroke();
+  // ═══ 1. CARD ZONA ═══
+  if(zoneOn){
+    const zx=panelX, zw=panelW, zh=zoneH;
+    // Fundo + glow da cor do estado
+    ctx.fillStyle='rgba(12,20,16,.9)'; roundRect(zx, py, zw, zh, 10); ctx.fill();
+    if(zGlow){ ctx.fillStyle=zGlow; roundRect(zx, py, zw, zh, 10); ctx.fill(); }
+    ctx.save(); ctx.shadowColor=zAccent; ctx.shadowBlur=9;
+    ctx.strokeStyle=zAccent; ctx.lineWidth=1.6; roundRect(zx, py, zw, zh, 10); ctx.stroke();
     ctx.restore();
 
-    // Barra de accent vertical (esquerda)
-    ctx.fillStyle=zAccent; roundRect(zx+4, py+8, 4, zh-16, 2); ctx.fill();
-
-    // Número da zona (grande, canto superior esquerdo)
+    // Header: label + ícone de status (menor, no topo direito)
     ctx.fillStyle='rgba(255,255,255,.55)'; ctx.font='bold 10px system-ui';
     ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('ZONA', zx+16, py+10);
-    ctx.fillStyle='#fff'; ctx.font='bold 26px system-ui';
-    ctx.fillText((zoneNum+1)+'/'+MAX_ZONES, zx+16, py+24);
+    ctx.fillText('ZONA', zx+12, py+9);
+    ctx.save(); ctx.translate(zx+zw-18, py+16); ctx.scale(0.68,0.68);
+    drawZoneIcon(0, 0, zIcon, zAccent);
+    ctx.restore();
 
-    // Ícone de status (canto superior direito) — desenhado com Canvas
-    drawZoneIcon(zx+zw-24, py+26, zIcon, zAccent);
+    // Número da zona (ou FINAL) + timer pulsando quando urgente
+    ctx.fillStyle='#fff'; ctx.font='bold 24px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText(zoneState==='final' ? 'FINAL' : (zoneNum+1)+'/'+MAX_ZONES, zx+12, py+21);
+    const tScale = zUrgent ? 1+0.07*Math.sin(T*8) : 1;
+    ctx.save();
+    ctx.translate(zx+zw-13, py+37); ctx.scale(tScale,tScale);
+    ctx.fillStyle = zUrgent ? zAccent : '#fff';
+    ctx.font='bold 26px system-ui'; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(Math.ceil(zoneTimer)+'s', 0, 0);
+    ctx.restore();
 
-    // Timer (contagem regressiva, bem grande)
-    ctx.fillStyle='#fff'; ctx.font='bold 28px system-ui';
-    ctx.textAlign='right'; ctx.textBaseline='top';
-    ctx.fillText(zTimer, zx+zw-14, py+36);
+    // Pips das 10 zonas: passadas · atual (pulsando) · futuras
+    const pipY=py+zh-27, pipL=zx+12, pipSpan=zw-24, step=pipSpan/MAX_ZONES;
+    for(let i=0;i<MAX_ZONES;i++){
+      const pcx=pipL+step*i+step/2;
+      const cur = i===zoneNum;
+      const s = cur ? 4.6*(1+0.25*Math.sin(T*4)) : 3.6;
+      ctx.save();
+      ctx.translate(pcx, pipY); ctx.rotate(Math.PI/4);
+      if(cur){
+        ctx.shadowColor=zAccent; ctx.shadowBlur=6;
+        ctx.fillStyle=zAccent;
+        ctx.fillRect(-s/2,-s/2,s,s);
+      } else if(i<zoneNum){
+        ctx.fillStyle='rgba(255,255,255,.40)';
+        ctx.fillRect(-s/2,-s/2,s,s);
+      } else {
+        ctx.strokeStyle='rgba(255,255,255,.20)'; ctx.lineWidth=1;
+        ctx.strokeRect(-s/2,-s/2,s,s);
+      }
+      ctx.restore();
+    }
 
-    // Barra de progresso dupla (mais visível)
-    const barX=zx+14, barW=zw-28, barY=py+zh-16, barH=5;
-    // Track
+    // Barra de progresso com listras marchando
+    const barX=zx+12, barW=zw-24, barY=py+zh-14, barH=6;
     ctx.fillStyle='rgba(0,0,0,.45)'; roundRect(barX, barY, barW, barH, barH/2); ctx.fill();
-    // Preenchimento com gradiente aproximado (2 partes)
     const progW=barW*Math.min(1,Math.max(0,zProgress));
     if(progW>1){
-      ctx.fillStyle=zAccent; roundRect(barX, barY, progW, barH, barH/2); ctx.fill();
-      // Brilho no topo da barra
-      ctx.fillStyle='rgba(255,255,255,.25)'; roundRect(barX, barY, progW, barH*0.45, barH/2); ctx.fill();
+      ctx.save();
+      roundRect(barX, barY, progW, barH, barH/2); ctx.clip();
+      ctx.fillStyle=zAccent; ctx.fillRect(barX, barY, progW, barH);
+      // Listras diagonais andando
+      ctx.fillStyle='rgba(255,255,255,.22)';
+      const off=(T*16)%12;
+      for(let sx=barX-12+off; sx<barX+progW; sx+=12){
+        ctx.beginPath();
+        ctx.moveTo(sx, barY+barH); ctx.lineTo(sx+4, barY+barH);
+        ctx.lineTo(sx+4+barH, barY); ctx.lineTo(sx+barH, barY);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle='rgba(255,255,255,.20)'; ctx.fillRect(barX, barY, progW, barH*0.4);
+      ctx.restore();
     }
+    ctx.strokeStyle='rgba(255,255,255,.15)'; ctx.lineWidth=1;
+    roundRect(barX, barY, barW, barH, barH/2); ctx.stroke();
 
     py+=zh+6;
   }
 
-  // ═══ 2. CHIP TEMPO ═══
+  // ═══ 2. TILES LADO A LADO: VIVOS | TEMPO ═══
   {
-    const th=42, tx=panelX+2, tw=panelW-4;
-    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(tx, py, tw, th, 8); ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(tx, py, tw, th, 8); ctx.stroke();
-
-    const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-    // Label
-    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 9px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='middle';
-    ctx.fillText('TEMPO', tx+14, py+th/2-5);
-    // Tempo em mono grande
-    ctx.fillStyle='#fff'; ctx.font='bold 20px monospace';
-    ctx.textBaseline='middle';
-    ctx.fillText(mm+':'+ss, tx+14, py+th/2+9);
-    // Separador visual sutil
-    ctx.fillStyle='rgba(255,255,255,.06)'; ctx.fillRect(tx+68, py+8, 1, th-16);
-
-    // Ícone relógio simples (círculo + ponteiros)
-    const icx=tx+tw-22, icy=py+th/2;
-    ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1.3;
-    ctx.beginPath(); ctx.arc(icx, icy, 9, 0, 6.28); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx, icy-5); ctx.stroke();      // ponteiro min
-    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx+5, icy-1); ctx.stroke();     // ponteiro seg
-
-    py+=th+4;
-  }
-
-  // ═══ 3. CHIP JOGADORES ═══
-  {
-    const ph=38, px=panelX+2, pw=panelW-4;
-    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(px, py, pw, ph, 8); ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(px, py, pw, ph, 8); ctx.stroke();
-
-    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 9px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='middle';
-    ctx.fillText('VIVOS', px+14, py+ph/2-5);
-    ctx.fillStyle='#fff'; ctx.font='bold 18px system-ui';
-    ctx.fillText('1', px+14, py+ph/2+9);
-
-    // Ícone pessoa (desenhado)
-    const hx=px+pw-20, hy=py+ph/2;
+    const tw2=(panelW-6)/2, th=tilesH;
+    // ── VIVOS (esquerda) ──
+    const vx=panelX, vy=py;
+    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(vx, vy, tw2, th, 9); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(vx, vy, tw2, th, 9); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 8px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('VIVOS', vx+10, vy+8);
+    ctx.fillStyle='#fff'; ctx.font='bold 20px system-ui';
+    ctx.fillText('1', vx+10, vy+18);
+    // Ícone pessoa
+    const hx=vx+tw2-16, hy=vy+th/2+2;
     ctx.strokeStyle='rgba(255,255,255,.45)'; ctx.lineWidth=1.3;
-    ctx.beginPath(); ctx.arc(hx, hy-5, 4, 0, 6.28); ctx.stroke();           // cabeça
-    ctx.beginPath(); ctx.arc(hx, hy+5, 6, Math.PI, 0); ctx.stroke();         // corpo (meio arco)
-    ctx.beginPath(); ctx.moveTo(hx, hy+5); ctx.lineTo(hx, hy+11); ctx.stroke(); // tronco
+    ctx.beginPath(); ctx.arc(hx, hy-6, 3.6, 0, 6.28); ctx.stroke();
+    ctx.beginPath(); ctx.arc(hx, hy+6, 5.5, Math.PI, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hx, hy+6); ctx.lineTo(hx, hy+11); ctx.stroke();
+    // ── TEMPO (direita) ──
+    const tx=panelX+tw2+6, ty=py;
+    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(tx, ty, tw2, th, 9); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(tx, ty, tw2, th, 9); ctx.stroke();
+    const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
+    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 8px system-ui';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('TEMPO', tx+10, ty+8);
+    ctx.fillStyle='#fff'; ctx.font='bold 16px monospace';
+    ctx.fillText(mm+':'+ss, tx+10, ty+20);
+    // Relógio pequeno com ponteiro girando (divertido)
+    const icx=tx+tw2-16, icy=ty+th/2+2;
+    ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.arc(icx, icy, 7, 0, 6.28); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx, icy-4); ctx.stroke();
+    const secAng=(elapsedT%60)/60*Math.PI*2 - Math.PI/2;
+    ctx.beginPath(); ctx.moveTo(icx, icy);
+    ctx.lineTo(icx+Math.cos(secAng)*5, icy+Math.sin(secAng)*5); ctx.stroke();
   }
 }
 //── Ícones de status da zona (desenhados com Canvas) ──
@@ -1527,28 +1742,170 @@ function drawZoneIcon(ix,iy,type,color){
   }
   ctx.restore();
 }
-function hudSlot(x,y,num,ativo){
-  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x,y,96,78,12); ctx.fill();
-  ctx.strokeStyle=ativo?'rgba(242,193,78,.85)':'rgba(235,240,238,.35)'; ctx.lineWidth=ativo?2:1.5;
-  roundRect(x,y,96,78,12); ctx.stroke();
-  ctx.fillStyle='#f2c14e'; roundRect(x+6,y+6,18,18,4); ctx.fill();
-  ctx.fillStyle='#3a2c10'; ctx.font='bold 12px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(num, x+15, y+16);
+//── Cor do calor: azul frio → amarelo → vermelho brasa ──
+function heatColor(h){
+  const mix=(a,b,t)=>Math.round(a+(b-a)*t);
+  let c;
+  if(h<0.5){ const t=h*2; c=[mix(90,255,t), mix(190,210,t), mix(255,74,t)]; }
+  else { const t=(h-0.5)*2; c=[255, mix(210,59,t), mix(74,30,t)]; }
+  return 'rgb('+c[0]+','+c[1]+','+c[2]+')';
+}
+//── Chaminha desenhada (tremula com o flicker) ──
+function tinyFlame(x,y,s,color,flicker){
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(x, y+s);
+  ctx.quadraticCurveTo(x-s*0.9, y+s*0.2, x-s*0.35, y-s*0.3);
+  ctx.quadraticCurveTo(x-s*0.1, y-s*0.05, x, y-s*(1+flicker*0.35));
+  ctx.quadraticCurveTo(x+s*0.15, y-s*0.4, x+s*0.4, y-s*0.15);
+  ctx.quadraticCurveTo(x+s*0.9, y+s*0.3, x, y+s);
+  ctx.fill();
+}
+//── Keycap (tecla desenhada no canto do slot) ──
+function keycap(x,y,label,gold){
+  ctx.fillStyle = gold ? '#f2c14e' : 'rgba(255,255,255,.16)';
+  roundRect(x,y,17,17,4); ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.4)'; ctx.lineWidth=1; roundRect(x,y,17,17,4); ctx.stroke();
+  ctx.fillStyle = gold ? '#3a2c10' : 'rgba(255,255,255,.85)';
+  ctx.font='bold 11px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label, x+8.5, y+9.5);
 }
 function drawSlots(){
-  const sw=96, sh=78, gap=10, x0=VW/2-(sw*2+gap)/2, y0=VH-sh-18;
-  hudSlot(x0, y0, '1', true);
-  hudSlot(x0+sw+gap, y0, '2', false);
+  const T=performance.now()/1000;
+  const w=WEAPONS[gun];
+  const M=20;                                   // margem da borda
+  // ═══ Geometria dos slots primeiro — o cartão de calor alinha exato com eles ═══
+  const s1W=100, s1H=76, s2W=80, s2H=64, gap=10;
+  const s2X=VW-M-s2W, s2Y=VH-18-s2H;
+  const s1X=s2X-gap-s1W, s1Y=VH-18-s1H;
+  // ═══ Cartão da arma: linha 1 = nome · modo · temperatura | linha 2 = termômetro cheio ═══
+  const iH=52, iW=s1W+gap+s2W, iX=s1X, iY=s1Y-8-iH;
+  const ig=ctx.createLinearGradient(iX,iY,iX,iY+iH);
+  ig.addColorStop(0,'rgba(14,22,18,.86)'); ig.addColorStop(1,'rgba(8,13,11,.92)');
+  ctx.fillStyle=ig; roundRect(iX,iY,iW,iH,10); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.14)'; ctx.lineWidth=1; roundRect(iX,iY,iW,iH,10); ctx.stroke();
+  const hc = heatColor(gunHeat);
+  const temp = (20 + gunHeat*180)|0;                         // 20°C fria → 200°C estourando
+  const blink = gunOverheat ? (Math.sin(T*10)>0 ? 1 : 0.35) : 1;
+  // ── Linha 1: nome + chip de modo à esquerda, temperatura à direita ──
+  const r1=iY+16;
+  ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(w.nome.toUpperCase(), iX+12, r1);
+  const nomeW=ctx.measureText(w.nome.toUpperCase()).width;
+  const chX=iX+12+nomeW+8, chW=34;
+  ctx.fillStyle = w.auto ? 'rgba(242,193,78,.18)' : 'rgba(255,255,255,.10)';
+  roundRect(chX, r1-7, chW, 14, 4); ctx.fill();
+  ctx.strokeStyle = w.auto ? 'rgba(242,193,78,.6)' : 'rgba(255,255,255,.25)';
+  ctx.lineWidth=1; roundRect(chX, r1-7, chW, 14, 4); ctx.stroke();
+  ctx.fillStyle = w.auto ? '#f2c14e' : 'rgba(255,255,255,.7)';
+  ctx.font='bold 9px system-ui'; ctx.textAlign='center';
+  ctx.fillText(w.auto?'AUTO':'SEMI', chX+chW/2, r1+1);
+  // Temperatura à direita + chaminha que cresce com o calor
+  ctx.save(); ctx.globalAlpha=blink;
+  ctx.fillStyle = (gunHeat>0.5||gunOverheat) ? hc : '#fff';
+  ctx.font='bold 16px system-ui'; ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.fillText(temp+'°C', iX+iW-12, r1+1);
+  const tempW=ctx.measureText(temp+'°C').width;
+  ctx.restore();
+  if(gunHeat>0.05){
+    const fl=Math.sin(T*22)*0.5+Math.sin(T*13.7)*0.5;
+    ctx.save(); ctx.globalAlpha=0.35+gunHeat*0.65;
+    tinyFlame(iX+iW-12-tempW-10, r1+1, 3.5+gunHeat*4, hc, fl);
+    ctx.restore();
+  }
+  // ── Linha 2: termômetro de largura total (azul frio → vermelho brasa) ──
+  const hbX=iX+12, hbW=iW-24, hbH=11, hbY=iY+iH-19;
+  ctx.fillStyle='rgba(0,0,0,.5)'; roundRect(hbX, hbY, hbW, hbH, hbH/2); ctx.fill();
+  if(gunHeat>0.02){
+    ctx.save();
+    roundRect(hbX, hbY, Math.max(hbH, hbW*gunHeat), hbH, hbH/2); ctx.clip();
+    const tg=ctx.createLinearGradient(hbX,0,hbX+hbW,0);   // gradiente fixo: a barra "revela" ele
+    tg.addColorStop(0,'#4ac1ff'); tg.addColorStop(0.55,'#ffd24a'); tg.addColorStop(1,'#ff3b1e');
+    ctx.globalAlpha=blink;
+    ctx.fillStyle=tg; ctx.fillRect(hbX, hbY, hbW, hbH);
+    ctx.fillStyle='rgba(255,255,255,.22)'; ctx.fillRect(hbX, hbY, hbW, hbH*0.45);
+    ctx.restore();
+  }
+  // Marcas de 25/50/75%
+  ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.lineWidth=1;
+  for(let i=1;i<4;i++){
+    const tx=hbX+hbW*i/4;
+    ctx.beginPath(); ctx.moveTo(tx, hbY+2); ctx.lineTo(tx, hbY+hbH-2); ctx.stroke();
+  }
+  // Superaqueceu: marcador branco piscando em 30% — onde a arma destrava
+  if(gunOverheat){
+    ctx.save(); ctx.globalAlpha=0.5+0.5*Math.sin(T*8);
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(hbX+hbW*0.30, hbY-2); ctx.lineTo(hbX+hbW*0.30, hbY+hbH+2); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  roundRect(hbX, hbY, hbW, hbH, hbH/2); ctx.stroke();
+
+  // ═══ Slots (arma ativa + medkit) ═══
+  // ── Slot 1: arma (ativo, dourado) ──
+  const g1=ctx.createLinearGradient(s1X,s1Y,s1X,s1Y+s1H);
+  g1.addColorStop(0,'rgba(20,28,22,.90)'); g1.addColorStop(1,'rgba(10,15,12,.94)');
+  ctx.fillStyle=g1; roundRect(s1X,s1Y,s1W,s1H,12); ctx.fill();
+  // brilho interno dourado sutil
+  ctx.fillStyle='rgba(242,193,78,.07)'; roundRect(s1X,s1Y,s1W,s1H,12); ctx.fill();
+  // Borda: dourada fria → vermelha em brasa; pisca quando superaquece
+  const hotBorder = gunHeat>0.35 ? heatColor(0.5+((gunHeat-0.35)/0.65)*0.5) : '#f2c14e';
+  ctx.save();
+  ctx.shadowColor=hotBorder; ctx.shadowBlur=8+gunHeat*8;
+  ctx.globalAlpha = gunOverheat ? (0.55+0.45*Math.sin(T*10)) : 1;
+  ctx.strokeStyle=hotBorder; ctx.lineWidth=2; roundRect(s1X,s1Y,s1W,s1H,12); ctx.stroke();
+  ctx.restore();
+  // Fumacinhas subindo do slot enquanto está travada esfriando
+  if(gunOverheat){
+    for(let i=0;i<3;i++){
+      const ph=(T*0.9+i*0.37)%1;
+      ctx.save();
+      ctx.globalAlpha=(1-ph)*0.85;
+      ctx.font=(11+ph*9)+'px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('💨', s1X+s1W*0.28+i*s1W*0.24+Math.sin((T+i)*5)*3, s1Y-4-ph*26);
+      ctx.restore();
+    }
+  }
+  keycap(s1X+7, s1Y+7, '1', true);
+  // Sprite da arma (com bounce na troca)
+  ctx.save();
   ctx.imageSmoothingEnabled=false;
-  if(IMG.weapons) ctx.drawImage(IMG.weapons, WEAPONS[gun].spr*SPR,0, SPR,SPR, x0+sw/2-22, y0+6, 44,44);
-  ctx.fillStyle='#fff'; ctx.font='bold 14px system-ui'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-  ctx.fillText('∞', x0+sw/2-12, y0+sh-11);
-  ctx.fillStyle='#f2c14e';
-  for(let i=0;i<3;i++){ roundRect(x0+sw/2+2+i*6.5, y0+sh-20, 3.6, 11, 1.8); ctx.fill(); }
-  if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, x0+sw+gap+sw/2-20, y0+8, 40,40);
-  ctx.fillStyle = medkits>0 ? '#fff' : 'rgba(255,255,255,.35)';
-  ctx.font='bold 15px system-ui';
-  ctx.fillText(''+medkits, x0+sw+gap+sw/2, y0+sh-11);
+  let ws=1;
+  if(swapAnim){ const bt=swapAnim.t/swapAnim.total; ws=0.5+0.5*bt+Math.sin(bt*Math.PI)*0.3*(1-bt); }
+  ctx.translate(s1X+s1W/2, s1Y+s1H/2-4);
+  ctx.scale(ws,ws);
+  if(IMG.weapons) ctx.drawImage(IMG.weapons, w.spr*SPR,0, SPR,SPR, -26, -26, 52,52);
+  ctx.restore();
+  // Nome pequeno na base do slot
+  ctx.fillStyle='rgba(255,255,255,.75)'; ctx.font='bold 9px system-ui';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(w.nome.toUpperCase(), s1X+s1W/2, s1Y+s1H-10);
+
+  // ── Slot 2: medkit ──
+  const canHeal = medkits>0 && player.hp<100;
+  const g2=ctx.createLinearGradient(s2X,s2Y,s2X,s2Y+s2H);
+  g2.addColorStop(0,'rgba(16,24,19,.86)'); g2.addColorStop(1,'rgba(9,14,11,.92)');
+  ctx.fillStyle=g2; roundRect(s2X,s2Y,s2W,s2H,11); ctx.fill();
+  // Pulso verde quando dá pra curar
+  ctx.strokeStyle = canHeal
+    ? 'rgba(143,209,50,'+(0.45+0.35*Math.sin(T*4)).toFixed(3)+')'
+    : 'rgba(255,255,255,.18)';
+  ctx.lineWidth = canHeal ? 1.8 : 1.2;
+  roundRect(s2X,s2Y,s2W,s2H,11); ctx.stroke();
+  keycap(s2X+6, s2Y+6, '2', false);
+  ctx.save();
+  ctx.imageSmoothingEnabled=false;
+  if(medkits<=0) ctx.globalAlpha=0.35;
+  if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, s2X+s2W/2-17, s2Y+s2H/2-19, 34,34);
+  ctx.restore();
+  // Contador (badge no canto)
+  ctx.fillStyle = medkits>0 ? '#8fd132' : 'rgba(255,255,255,.25)';
+  roundRect(s2X+s2W-25, s2Y+s2H-23, 19, 17, 6); ctx.fill();
+  ctx.fillStyle = medkits>0 ? '#12240a' : 'rgba(0,0,0,.5)';
+  ctx.font='bold 11px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('x'+medkits, s2X+s2W-15.5, s2Y+s2H-14);
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
@@ -1565,6 +1922,8 @@ function start(){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
   elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=50;
+  hpGhost=100; armorGhost=50;
+  gunHeat=0; gunOverheat=false; overheatFlash=0; steamParts=[];
   const s=findSpawn(), sv=collInfo(coll[s]);
   player.x=(s%COLS)*MTILE+MTILE/2; player.y=((s/COLS)|0)*MTILE+MTILE/2;
   player.L = (sv && sv.levels) ? sv.levels[0] : 0;
