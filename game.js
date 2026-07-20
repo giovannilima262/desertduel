@@ -12,6 +12,14 @@ const VIEW_SCALE = 3;
 const SPEED = 6.5 * MTILE;         // mesma sensação do editor: 6,5 células/s
 const PLAYER_R = MTILE * 0.34;     // mesmo raio de colisão do editor
 
+//======================= ZONAS (Fortnite-style) =======================
+const MAX_ZONES    = 10;             // total de zonas na partida
+const ZONE_WAIT    = 75;             // 75s entre safes
+const ZONE_SHRINK  = 20;             // 20s fechando
+const ZONE_FINAL   = 30;             // 30s fechamento final até zero
+const ZONE_DMG_TICK = 1.0;           // intervalo de dano fora da zona
+const ZONE_BASE_DMG = 2;             // dano base por tick (escala com o nº da zona)
+
 //======================= CANVAS =======================
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -251,6 +259,9 @@ let kills = 0;                      // abates (bots ainda não existem — já f
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
 let miniMap = null, miniBg = '#c99a63';     // offscreen 1px/célula + cor dominante
+let zoneState = 'idle', zoneTimer = 0, zoneDmgTimer = 0, zoneNum = 0;   // idle|waiting|shrinking
+let zoneCurrent = null, zoneNext = null;      // {cx,cy,r} em px (world coords)
+let zoneShrinkFrom = null;                   // estado da zona no início do shrink
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -279,6 +290,7 @@ function moveAxis(nx,ny,horiz){
 }
 function step(dt){
   elapsedT += dt;
+  updateZone(dt);
   let dx=0,dy=0;
   if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
   if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
@@ -596,6 +608,158 @@ function findSpawn(){
   return 0;
 }
 
+//======================= ZONAS =======================
+function initZones(){
+  zoneNum = 0; zoneState = 'idle';
+  // Zona inicial cobre o mapa inteiro
+  const cx = WORLD_W/2, cy = WORLD_H/2;
+  const r = Math.hypot(WORLD_W/2, WORLD_H/2) + MTILE*2;
+  zoneCurrent = {cx, cy, r};
+  generateNextZone();
+  zoneState = 'waiting'; zoneTimer = 30;  // primeira safe mais rápida
+}
+function generateNextZone(){
+  if(!zoneCurrent || zoneNum >= MAX_ZONES - 1) return;  // última zona = final
+  // Shrink: começa no meio da curva (como se fosse zona 10 das 20 anteriores)
+  const progress = 0.50 + (zoneNum / (MAX_ZONES - 1)) * 0.50;  // 0.50 → 1.0
+  const p4 = progress*progress*progress*progress;               // curva de 4ª ordem
+  const lo = 0.98 - p4*0.60;                                    // 0.90 → 0.38
+  const hi = 0.99 - p4*0.50;                                    // 0.94 → 0.49
+  const ratio = lo + Math.random()*(hi-lo);
+  const newR = zoneCurrent.r * ratio;
+  // Todas as 10 zonas podem "viajar" (safe se desloca pelo mapa)
+  const maxDrift = zoneCurrent.r;
+  // Ponto aleatório contido no círculo atual E nos bounds do mundo
+  const boundL = Math.min(newR, WORLD_W - newR);  // se newR > metade do mundo, bound=WORLD_W-newR
+  const boundR = Math.max(newR, WORLD_W - newR);
+  const boundT = Math.min(newR, WORLD_H - newR);
+  const boundB = Math.max(newR, WORLD_H - newR);
+  let ncx, ncy, tries=0;
+  do {
+    const ang = Math.random()*Math.PI*2;
+    const dist = Math.random()*maxDrift;
+    ncx = clamp(zoneCurrent.cx + Math.cos(ang)*dist, boundL, boundR);
+    ncy = clamp(zoneCurrent.cy + Math.sin(ang)*dist, boundT, boundB);
+    tries++;
+  } while(tries < 30 && Math.hypot(ncx-zoneCurrent.cx, ncy-zoneCurrent.cy) > maxDrift + 1);
+  zoneNext = { cx:ncx, cy:ncy, r:newR };
+}
+function updateZone(dt){
+  if(zoneState==='idle') return;
+  zoneTimer -= dt;
+  if(zoneState==='waiting' && zoneTimer <= 0){
+    if(zoneNum >= MAX_ZONES - 1){
+      // Última safe: fecha até quase zero
+      zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
+      zoneState = 'final'; zoneTimer = ZONE_FINAL; zoneNext = null;
+      return;
+    }
+    // Começa a fechar — guarda estado inicial pra interpolar
+    zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
+    zoneState = 'shrinking'; zoneTimer = ZONE_SHRINK;
+  } else if(zoneState==='final'){
+    // Fechamento derradeiro: raio vai até ~1 tile
+    const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
+    zoneCurrent.r = zoneShrinkFrom.r * (1 - t*t);  // ease-in quadrático até zero
+    if(zoneTimer <= 0){ zoneTimer = 0; zoneCurrent.r = MTILE*0.5; } // trava no zero
+  } else if(zoneState==='shrinking'){
+    const t = clamp(1 - zoneTimer/ZONE_SHRINK, 0, 1);  // 0→1 com ease-in
+    const ease = t*t;
+    zoneCurrent.cx = zoneShrinkFrom.cx + (zoneNext.cx - zoneShrinkFrom.cx)*ease;
+    zoneCurrent.cy = zoneShrinkFrom.cy + (zoneNext.cy - zoneShrinkFrom.cy)*ease;
+    zoneCurrent.r  = zoneShrinkFrom.r  + (zoneNext.r  - zoneShrinkFrom.r)*ease;
+    if(zoneTimer <= 0){
+      zoneCurrent = {cx:zoneNext.cx, cy:zoneNext.cy, r:zoneNext.r};
+      zoneNum++;
+      generateNextZone();
+      zoneState = zoneNext ? 'waiting' : 'final';
+      zoneTimer = ZONE_WAIT;
+    }
+  }
+  // Dano fora da zona
+  if(zoneCurrent && zoneState!=='idle'){
+    const dist = Math.hypot(player.x - zoneCurrent.cx, player.y - zoneCurrent.cy);
+    if(dist > zoneCurrent.r){
+      zoneDmgTimer += dt;
+      if(zoneDmgTimer >= ZONE_DMG_TICK){
+        zoneDmgTimer -= ZONE_DMG_TICK;
+        player.hp -= ZONE_BASE_DMG + zoneNum;
+        if(player.hp <= 0){ player.hp = 0; /* morte depois */ }
+      }
+    } else {
+      zoneDmgTimer = 0;
+    }
+  }
+}
+function drawZoneOverlay(){
+  if(!zoneCurrent) return;
+  const vx = cam.x, vy = cam.y, vw = VW/VIEW_SCALE, vh = VH/VIEW_SCALE;
+  ctx.save();
+  // Overlay escuro fora da zona (com buraco na safe)
+  const fullyClosed = zoneState==='final' && zoneCurrent.r <= MTILE;
+  ctx.beginPath();
+  ctx.rect(vx-10, vy-10, vw+20, vh+20);
+  if(!fullyClosed){
+    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2, true);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(25,10,8,0.55)';
+  ctx.fill('evenodd');
+  // Borda da zona atual (parede da tempestade)
+  const borderColors = {
+    waiting:   ['rgba(80,180,255,0.9)',  'rgba(80,160,255,0.3)'],
+    shrinking: ['rgba(255,140,80,0.95)', 'rgba(255,100,40,0.35)'],
+    final:     ['rgba(255,60,40,0.95)',  'rgba(255,30,20,0.4)'],
+  };
+  const bc = borderColors[zoneState] || borderColors.waiting;
+  if(!(zoneState==='final' && zoneCurrent.r <= MTILE)){  // some quando fecha tudo
+    ctx.beginPath();
+    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r, 0, Math.PI*2);
+    ctx.strokeStyle = bc[0];
+    ctx.lineWidth = zoneState==='shrinking' ? 5 : 4;
+    ctx.stroke();
+    // Borda externa glow
+    ctx.beginPath();
+    ctx.arc(zoneCurrent.cx, zoneCurrent.cy, zoneCurrent.r+6, 0, Math.PI*2);
+    ctx.strokeStyle = bc[1];
+    ctx.lineWidth = 14;
+    ctx.stroke();
+  }
+  // Próxima safe (preview) — visível durante espera E fechamento
+  if(zoneNext && (zoneState==='waiting' || zoneState==='shrinking')){
+    ctx.beginPath();
+    ctx.arc(zoneNext.cx, zoneNext.cy, zoneNext.r, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([12, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+function drawZoneOnMinimap(cx, cy, z){
+  if(!zoneCurrent) return;
+  // Zona atual
+  const mmColors = {waiting:'rgba(80,180,255,0.8)', shrinking:'rgba(255,140,80,0.9)', final:'rgba(255,50,30,0.9)'};
+  ctx.beginPath();
+  ctx.arc(cx + (zoneCurrent.cx/MTILE - player.x/MTILE)*z, cy + (zoneCurrent.cy/MTILE - player.y/MTILE)*z,
+    zoneCurrent.r/MTILE*z, 0, Math.PI*2);
+  ctx.strokeStyle = mmColors[zoneState] || mmColors.waiting;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Próxima safe
+  if(zoneNext && (zoneState==='waiting' || zoneState==='shrinking')){
+    ctx.beginPath();
+    ctx.arc(cx + (zoneNext.cx/MTILE - player.x/MTILE)*z, cy + (zoneNext.cy/MTILE - player.y/MTILE)*z,
+      zoneNext.r/MTILE*z, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
 //======================= RENDER =======================
 let cam={x:0,y:0};
 function draw(){
@@ -866,6 +1030,8 @@ function draw(){
   ctx.fill();
   ctx.stroke();
 
+  // ── Zona (overlay mundial, antes do HUD) ──
+  drawZoneOverlay();
 
   // ═══════════ HUD (barras+kills · minimapa+bússola+chips · slots) ═══════════
   ctx.setTransform(1,0,0,1,0,0);
@@ -922,6 +1088,8 @@ function drawMinimap(){
     ctx.fillStyle='#f2c14e';                                   // baús fechados = pontos dourados
     for(const b of chests){ if(b.st!=='open')
       ctx.fillRect(cx+(b.c+0.5-pc)*z-2, cy+(b.r+0.5-pr)*z-2, 4, 4); }
+    // Zonas no minimapa
+    drawZoneOnMinimap(cx, cy, z);
   }
   ctx.restore();
   ctx.strokeStyle='rgba(235,240,238,.55)'; ctx.lineWidth=3;
@@ -975,8 +1143,14 @@ function drawMinimap(){
   ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(-5.5,6); ctx.lineTo(0,2.5); ctx.lineTo(5.5,6);
   ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
-  // chips: relógio + jogadores
+  // chips: zona + relógio + jogadores
   const chH=32, chY=cy+ringOut+12;
+  // Label da zona
+  let zoneLabel = '', zoneIcon = '🌀';
+  if(zoneState==='waiting'){ zoneLabel = 'Safe '+(zoneNum+1)+'/'+MAX_ZONES+' '+Math.ceil(zoneTimer)+'s'; zoneIcon='📍'; }
+  else if(zoneState==='shrinking'){ zoneLabel = 'Fechando '+Math.ceil(zoneTimer)+'s'; zoneIcon='⏳'; }
+  else if(zoneState==='final'){ zoneLabel = 'Fechando '+Math.ceil(zoneTimer)+'s'; zoneIcon='💀'; }
+  if(zoneLabel) hudChip(cx+R-64-8-104-8-128, chY, 128, chH, zoneIcon, zoneLabel);
   const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
   hudChip(cx+R-64, chY, 64, chH, '👤', '1');
   hudChip(cx+R-64-8-104, chY, 104, chH, '🕐', mm+':'+ss);
@@ -1034,6 +1208,7 @@ function start(){
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE));
   overlay.classList.add('hidden');
   canvas.style.cursor='none';  // custom crosshair
+  initZones();
   state='playing'; last=performance.now();
 }
 startBtn.addEventListener('click', start);
