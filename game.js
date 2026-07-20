@@ -273,7 +273,7 @@ let zoneBanner = null;                       // anúncio central: {text,sub,colo
 let zoneHitFlash = 0;                        // flash vermelho ao tomar dano da zona
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
-let flashT = 0, flashAng = 0;  // muzzle flash
+let flashT = 0, flashAng = 0, flashMx = 0, flashMy = 0;  // muzzle flash (posição do cano no tiro)
 
 // Shooting juice state
 let recoilForce = 0;        // current recoil offset (decays)
@@ -549,16 +549,18 @@ function shoot(){
   shakePhase = w.shake;
   gunSound(w.snd);
   const angle = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
-  flashT = 0.05; flashAng = angle;
-  const gx = player.x + Math.cos(angle)*SPR*0.45;
-  const gy = player.y-6 + Math.sin(angle)*SPR*0.45;
-  const aimDist = Math.max(MTILE*2, Math.hypot(mouse.wx-gx, mouse.wy-gy));
+  // Posição do cano (muzzle) = centro da arma + ponta do sprite
+  const wpDist = SPR*0.35;  // distância base da arma
+  const mx = player.x + Math.cos(angle)*(wpDist + SPR*0.5);
+  const my = player.y-6 + Math.sin(angle)*(wpDist + SPR*0.5);
+  flashT = 0.05; flashAng = angle; flashMx = mx; flashMy = my;
+  const aimDist = Math.max(MTILE*2, Math.hypot(mouse.wx-mx, mouse.wy-my));
   const bulletSpeed = MTILE*w.speed;
   for(let p=0;p<w.pellets;p++){
     const a = angle + (Math.random()*2-1)*w.spread;          // spread por projétil
-    const txw = gx + Math.cos(a)*aimDist, tyw = gy + Math.sin(a)*aimDist;
+    const txw = mx + Math.cos(a)*aimDist, tyw = my + Math.sin(a)*aimDist;
     bullets.push({
-      x: gx, y: gy,
+      x: mx, y: my,
       vx: Math.cos(a)*bulletSpeed,
       vy: Math.sin(a)*bulletSpeed,
       tx: txw, ty: tyw,
@@ -1043,9 +1045,7 @@ function draw(){
 	    ctx.restore();
 	    if(flashT > 0){
 	      const fs = _wDef.flash * 6;
-	      const fx = player.x + Math.cos(flashAng)*(_wpDist + SPR*0.5);
-	      const fy = player.y-6 + Math.sin(flashAng)*(_wpDist + SPR*0.5);
-	      ctx.save(); ctx.translate(fx, fy); ctx.rotate(flashAng);
+	      ctx.save(); ctx.translate(flashMx, flashMy); ctx.rotate(flashAng);
 	      ctx.globalAlpha = Math.min(1, flashT/0.05);
 	      ctx.fillStyle='#ffd97a';
 	      ctx.beginPath();
@@ -1187,6 +1187,10 @@ function draw(){
 	    }
 	  }
 	  for(const h of hits){
+		// Esconde faísca sob ponte (mesmo critério das balas)
+		const hcx = Math.floor(h.x/MTILE), hcy = Math.floor(h.y/MTILE);
+		const hov = overAt(hcx, hcy);
+		if(hov > 0 && (hov-1) >= h.level) continue;
 	    h.x += h.vx*(1/60); h.y += h.vy*(1/60);
 	    const alpha = h.life/0.14;
 	    ctx.strokeStyle=`rgba(245,235,215,${alpha})`;
