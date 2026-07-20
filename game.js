@@ -66,12 +66,15 @@ function loadLevel(){
   gunItems = (MAP.guns||[]).filter(g=>WEAPONS[g.t]).map(g=>({c:g.c, r:g.r, t:g.t, bob:Math.random()*6.28}));
   chests = (MAP.chests||[]).map(b=>({ c:b.c, r:b.r, v:CHEST_TILES[b.v]?b.v:1,
     items:(b.items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[] }));
-  // minimapa: 1px por célula = cor média do tile mais alto (gerado uma única vez)
+  // minimapa: 1px por célula — só terreno sólido (sem sombra nem opacidade)
   miniMap = document.createElement('canvas'); miniMap.width=COLS; miniMap.height=ROWS;
   const mmc = miniMap.getContext('2d'); mmc.imageSmoothingEnabled = true;
   mmc.fillStyle='#c99a63'; mmc.fillRect(0,0,COLS,ROWS);
   for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){ const i=r*COLS+c;
-    for(let li=layers.length-1;li>=0;li--){ const t=layers[li].tiles[i]; if(!t) continue;
+    if(sombra[i]) continue;                               // sem sombra decorativa
+    for(let li=layers.length-1;li>=0;li--){
+      const L=layers[li]; const t=L.tiles[i]; if(!t) continue;
+      if((typeof L.alpha==='number') && L.alpha<1) continue; // sem camada translúcida
       const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) break;
       mmc.drawImage(img, t[1]*s[1], t[2]*s[1], s[1], s[1], c, r, 1, 1); break; }
   }
