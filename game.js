@@ -1373,16 +1373,9 @@ function drawBars(){
   vitalBar(bx, Y+44, bw, 19, player.hp, hpGhost, 100,
     lowHp?'#ff7a5a':'#ff6448', lowHp?'#d92c1f':'#cf3322', sl);
   // Número grande de HP
-  const hpTxt=''+(player.hp|0);
   ctx.fillStyle = lowHp ? '#ff8d75' : '#fff';
   ctx.font='bold 26px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(hpTxt, bx+bw+14, Y+53);
-  const hpW=ctx.measureText(hpTxt).width;
-  ctx.fillStyle='rgba(255,255,255,.4)'; ctx.font='bold 12px system-ui';
-  ctx.fillText('/100', bx+bw+16+hpW, Y+56);
-  // Label
-  ctx.fillStyle='rgba(255,255,255,.35)'; ctx.font='bold 9px system-ui';
-  ctx.fillText('COLETE', bx, Y+9);
+  ctx.fillText(''+(player.hp|0), bx+bw+14, Y+53);
   ctx.restore();
   // Pulso vermelho na tela com HP baixo
   if(lowHp && player.hp>0){
