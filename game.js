@@ -380,11 +380,9 @@ function step(dt){
   const w = WEAPONS[gun];
   fireCooldown = Math.max(0, fireCooldown - dt);
   if(swapAnim){ swapAnim.t+=dt; if(swapAnim.t>=swapAnim.total) swapAnim=null; }
-  // Arma tocando ponte? Trava o disparo (não o corpo do player)
+  // Disparo: balas atravessam por baixo da ponte
   const aimAng = Math.atan2(mouse.wy - (player.y-6), mouse.wx - player.x);
-  const wpd = SPR*0.35 - recoilForce;
-  const weaponOnBridge = spriteOverlapsBridge(player.x + Math.cos(aimAng)*wpd, player.y-6 + Math.sin(aimAng)*wpd, player.L);
-  if(mouse.down && fireCooldown <= 0 && !gunOverheat && state=="playing" && !weaponOnBridge && (w.auto || !fireLatch)){
+  if(mouse.down && fireCooldown <= 0 && !gunOverheat && state=="playing" && (w.auto || !fireLatch)){
     fireCooldown = w.rate;
     fireLatch = true;
     shoot();
@@ -412,7 +410,7 @@ function step(dt){
     const d = Math.hypot(b.vx,b.vy)||1;
     const nx = b.tx + (b.vx/d)*MTILE*0.15;  // faísca um pouco à frente do impacto
     const ny = b.ty + (b.vy/d)*MTILE*0.15;
-    spawnSparks(nx, ny, b.vx, b.vy);
+    spawnSparks(nx, ny, b.vx, b.vy, b.level);
   }}
   bullets = bullets.filter(b => b.life > 0);
   for(const h of hits){ h.life -= dt; }
@@ -612,7 +610,7 @@ function raycast(x1, y1, x2, y2, startL){
   }
   return {x:x2,y:y2,L:curL};  // reached crosshair
 }
-function spawnSparks(x, y, vx, vy){
+function spawnSparks(x, y, vx, vy, level){
   const baseAng = Math.atan2(vy, vx) + Math.PI;  // direção contrária à bala (rebate)
   for(let i=0;i<8;i++){
     const a = baseAng + (Math.random()*2-1)*0.7; // cone mais aberto de ±40°
@@ -621,7 +619,7 @@ function spawnSparks(x, y, vx, vy){
     hits.push({
       x, y,
       vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
-      len, ang: a,
+      len, ang: a, level,
       life: 0.08+Math.random()*0.06,
     });
   }
@@ -634,27 +632,15 @@ function weaponDist(px, py, angle, maxDist){
 // ── Colisão per-frame das balas: atravessa tudo, só para em pontes e bordas ──
 function bulletStep(b, dt){
   if(b.life <= 0) return;
-
-  const prevX = b.x, prevY = b.y;
-  b.x += b.vx * dt;
-  b.y += b.vy * dt;
   b.life -= dt;
-
-  if(b.life <= 0){
-    b.tx = b.x; b.ty = b.y;                             // faísca na posição atual
-    return;
-  }
-
-  // Borda do mapa
-  const cx = Math.floor(b.x / MTILE), cy = Math.floor(b.y / MTILE);
-  if(cx < 0 || cy < 0 || cx >= COLS || cy >= ROWS){
-    b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
-  }
-
-  // Colisão com bloqueio (coll=1)
-  const ci = collInfo(collAt(cx, cy));
-  if(ci && ci.kind === 'block'){
-    b.x = prevX; b.y = prevY; b.tx = prevX; b.ty = prevY; b.life = 0; return;
+  // Raycast do frame: ajusta posição e nível com obstáculos
+  const nextX = b.x + b.vx*dt, nextY = b.y + b.vy*dt;
+  const hit = raycast(b.x, b.y, nextX, nextY, b.level);
+  b.x = hit.x; b.y = hit.y; b.level = hit.L;
+  // Chegou no destino ou bateu em algo = faísca
+  const dxNext = nextX - b.x, dyNext = nextY - b.y;
+  if(Math.abs(dxNext) > 0.2 || Math.abs(dyNext) > 0.2 || b.life <= 0){
+    b.tx = b.x; b.ty = b.y; b.life = 0;
   }
 }
 
@@ -1169,9 +1155,12 @@ function draw(){
 	  }
 
 	  
-// 3d) Balas e sparks — na frente de tudo
+// 3d) Balas e sparks — esconde balas sob ponte
 	  if(IMG.interface){
 	    for(const b of bullets){
+	      const bcx = Math.floor(b.x/MTILE), bcy = Math.floor(b.y/MTILE);
+	      const bov = overAt(bcx, bcy);
+	      if(bov > 0 && (bov-1) >= b.level) continue;   // bala sob/na ponte: escondida pelo asset
 	      const ang = Math.atan2(b.vy, b.vx);
 	      const isShotgun = b.w === 'escopeta';
 	      // Ambas usam a bala amarela (4,3). Escopeta com pellet menor.
@@ -1188,6 +1177,9 @@ function draw(){
 	  } else {
 	    // Fallback: simple circles
 	    for(const b of bullets){
+	      const bcx = Math.floor(b.x/MTILE), bcy = Math.floor(b.y/MTILE);
+	      const bov = overAt(bcx, bcy);
+	      if(bov > 0 && (bov-1) >= b.level) continue;
 	      ctx.fillStyle='#2a2218';
 	      ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, 6.28); ctx.fill();
 	      ctx.fillStyle='#f0e8d8';
