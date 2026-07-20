@@ -66,6 +66,15 @@ function loadLevel(){
   gunItems = (MAP.guns||[]).filter(g=>WEAPONS[g.t]).map(g=>({c:g.c, r:g.r, t:g.t, bob:Math.random()*6.28}));
   chests = (MAP.chests||[]).map(b=>({ c:b.c, r:b.r, v:CHEST_TILES[b.v]?b.v:1,
     items:(b.items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[] }));
+  // minimapa: 1px por célula = cor média do tile mais alto (gerado uma única vez)
+  miniMap = document.createElement('canvas'); miniMap.width=COLS; miniMap.height=ROWS;
+  const mmc = miniMap.getContext('2d'); mmc.imageSmoothingEnabled = true;
+  mmc.fillStyle='#c99a63'; mmc.fillRect(0,0,COLS,ROWS);
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){ const i=r*COLS+c;
+    for(let li=layers.length-1;li>=0;li--){ const t=layers[li].tiles[i]; if(!t) continue;
+      const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) break;
+      mmc.drawImage(img, t[1]*s[1], t[2]*s[1], s[1], s[1], c, r, 1, 1); break; }
+  }
   // Baús bloqueiam balas e player — sempre viram block
   for(const b of chests){
     coll[b.r * COLS + b.c] = 1;
@@ -174,9 +183,14 @@ function canStep(fromVal,L,toVal,toOver){
 }
 
 //======================= PLAYER =======================
-const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100 };
+const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100, armor:50,
+  heading:-Math.PI/2, headingS:-Math.PI/2 };   // direção de MOVIMENTO (alvo + suavizada) — bússola/minimapa
 const keys={};
-addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; });
+addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true;
+  if(e.key==='2' && state==='playing' && medkits>0 && player.hp<100){   // slot [2]: kit médico
+    medkits--; player.hp=Math.min(100, player.hp+50); chestSound();
+  }
+});
 addEventListener('keyup',  e=>{ keys[e.key.toLowerCase()]=false; });
 // Mouse tracking: canvas-relative pos + world pos (for weapon aim)
 const mouse = { sx:0, sy:0, wx:0, wy:0, down:false };
@@ -218,6 +232,11 @@ const CHEST_COLORS = ['#e8845c', '#f4c95d'];  // cor do anel: [laranja, dourado]
 const CHEST_RANGE = MTILE*1.7;      // distância que permite interagir
 const CHEST_CHARGE = [1.2, 2.0];     // segundos para abrir: [laranja, dourado]
 let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open', t, loot:[voos]}
+// ── HUD: estado do layout novo ──
+let kills = 0;                      // abates (bots ainda não existem — já fica pronto)
+let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
+let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
+let miniMap = null;                 // offscreen 1px/célula gerado no loadLevel
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0;  // muzzle flash
@@ -245,6 +264,7 @@ function moveAxis(nx,ny,horiz){
     player.L = nv.kind==='spawn' ? 0 : nv.level;
 }
 function step(dt){
+  elapsedT += dt;
   let dx=0,dy=0;
   if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
   if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
@@ -252,9 +272,14 @@ function step(dt){
   if(player.moving){
     const l=Math.hypot(dx,dy), s=SPEED*dt;
     if(dx) player.flip = dx<0;
+    player.heading = Math.atan2(dy, dx);               // direção do movimento (WASD)
     moveAxis(player.x+dx/l*s, player.y, true);
     moveAxis(player.x, player.y+dy/l*s, false);
   }
+  // Suaviza heading (bússola e minimapa seguem o movimento, não o mouse)
+  let hd = player.heading - player.headingS;
+  hd = Math.atan2(Math.sin(hd), Math.cos(hd));          // normaliza para [-PI, PI]
+  player.headingS += hd * Math.min(1, dt * 14);
   player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0; // frame 3 = morte, skip
 
   // ── Pegar arma do chão (troca AO ENTRAR no item; parado em cima não re-troca) ──
@@ -828,62 +853,150 @@ function draw(){
   ctx.stroke();
 
 
-  // ═══════════ HUD ═══════════
+  // ═══════════ HUD (barras+kills · minimapa+bússola+chips · slots) ═══════════
   ctx.setTransform(1,0,0,1,0,0);
+  drawBars();
+  drawMinimap();
+  drawSlots();
 
-  // ── Vida (top-left) ──
-  const hp=player.hp||100, hpMax=100;
-  const hx=16, hy=14, bw=174, bh=22, br=10;
-  // Panel
-  ctx.fillStyle='rgba(18,13,9,.82)';
-  roundRect(hx, hy, bw+12, bh+18, br); ctx.fill();
-  ctx.strokeStyle='rgba(200,160,110,.25)'; ctx.lineWidth=1;
-  roundRect(hx, hy, bw+12, bh+18, br); 
-  // Heart icon
-  ctx.fillStyle='#d4453a'; ctx.font='15px system-ui';
-  ctx.fillText('♥', hx+8, hy+20);
-  // Bar bg
-  ctx.fillStyle='#2a1414';
-  roundRect(hx+28, hy+6, bw, bh, bh/2); ctx.fill();
-  // Bar fill with gradient-like segments
-  const ratio=Math.max(0,hp/hpMax);
-  if(ratio>0){
-    const grad=ctx.createLinearGradient(hx+28,0,hx+28+bw,0);
-    grad.addColorStop(0,'#c2422e'); grad.addColorStop(1,'#e85d3a');
-    ctx.fillStyle=grad;
-    roundRect(hx+28, hy+6, bw*ratio, bh, bh/2); ctx.fill();
-    // Shine on top
-    ctx.fillStyle='rgba(255,255,255,.12)';
-    roundRect(hx+28, hy+6, bw*ratio, bh/2, [bh/2,bh/2,0,0]); ctx.fill();
-  }
-  // HP number
-  ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui'; ctx.textAlign='center';
-  ctx.fillText(hp+' / '+hpMax, hx+28+bw/2, hy+6+bh/2+4);
-  // Separator dots (decorative)
-  ctx.fillStyle='rgba(200,160,110,.4)'; ctx.textAlign='left'; ctx.font='8px system-ui';
-  ctx.fillText('···················', hx+28+4, hy+bh+12);
-
-  // ── Arma (bottom-center) ──
-  const wW=72, wH=60, wX=VW/2-wW/2, wY=VH-wH-22;
-  ctx.fillStyle='rgba(18,13,9,.82)';
-  roundRect(wX, wY, wW, wH, 12); ctx.fill();
-  ctx.strokeStyle='rgba(200,160,110,.35)'; ctx.lineWidth=1.5;
-  roundRect(wX, wY, wW, wH, 12); 
-  // Top accent line
-  ctx.strokeStyle='rgba(244,201,93,.5)'; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(wX+16, wY); ctx.lineTo(wX+wW-16, wY); 
-  // Weapon sprite + nome (arma atual)
+  // Custom crosshair (por cima de tudo)
   if(IMG.weapons){
-    ctx.drawImage(IMG.weapons, WEAPONS[gun].spr*SPR,0, SPR,SPR, wX+wW/2-18, wY+6, 36,36);
-  }
-  ctx.fillStyle='#e8d5b5'; ctx.font='bold 9px system-ui'; ctx.textAlign='center';
-  ctx.fillText(WEAPONS[gun].nome.toUpperCase(), wX+wW/2, wY+wH-9);
-
-  // Custom crosshair
-  if(IMG.weapons){
-    const cs=SPR*2;  // crosshair size (48px)
+    const cs=SPR*2;
     ctx.drawImage(IMG.weapons, 5*SPR, 3*SPR, SPR, SPR, mouse.sx-cs/2, mouse.sy-cs/2, cs, cs);
   }
+}
+
+//======================= HUD (layout novo) =======================
+function hudBar(x,y,w,h,val,max,cor,icone,corBadge){
+  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x+h*0.5,y,w,h,h/2); ctx.fill();
+  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(x+h*0.5,y,w,h,h/2); ctx.stroke();
+  const pad=3, fw=(w-pad*2)*Math.max(0,Math.min(1,val/max));
+  if(fw>3){ ctx.fillStyle=cor; roundRect(x+h*0.5+pad,y+pad,fw,h-pad*2,(h-pad*2)/2); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,.20)'; roundRect(x+h*0.5+pad,y+pad,fw,(h-pad*2)*0.45,(h-pad*2)/2); ctx.fill(); }
+  ctx.fillStyle='#fff'; ctx.font='bold '+Math.round(h*0.5)+'px system-ui';
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.fillText((val|0)+'/'+max, x+h*0.5+w-12, y+h/2+1);
+  const bx=x+h*0.25, by=y+h/2;                                 // badge circular à esquerda
+  ctx.fillStyle='#0f1d18'; ctx.beginPath(); ctx.arc(bx,by,h*0.72,0,6.28); ctx.fill();
+  ctx.strokeStyle=corBadge; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(bx,by,h*0.72,0,6.28); ctx.stroke();
+  ctx.fillStyle=corBadge; ctx.font='bold '+Math.round(h*0.8)+'px system-ui'; ctx.textAlign='center';
+  ctx.fillText(icone, bx, by+1);
+}
+function drawBars(){
+  const X=22, Y=20, W=280, H=26;
+  hudBar(X, Y, W, H, player.hp, 100, '#e33b2f', '♥', '#e8483a');
+  hudBar(X, Y+H+12, W*0.76, H*0.88, player.armor, 100, '#8fd132', '✚', '#79bd22');
+  const kY=Y+H+12+H*0.88+14, kW=128, kH=52;                    // painel KILLS
+  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(X,kY,kW,kH,10); ctx.fill();
+  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(X,kY,kW,kH,10); ctx.stroke();
+  ctx.font='24px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('💀', X+12, kY+kH/2+1);
+  ctx.fillStyle='rgba(220,230,225,.75)'; ctx.font='bold 11px system-ui';
+  ctx.fillText('KILLS', X+50, kY+16);
+  ctx.fillStyle='#fff'; ctx.font='bold 20px system-ui';
+  ctx.fillText(''+kills, X+50, kY+37);
+}
+function drawMinimap(){
+  const R=64, cx=VW-R-28, cy=R+26;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,6.28); ctx.clip();
+  ctx.fillStyle='#20302a'; ctx.fillRect(cx-R,cy-R,R*2,R*2);
+  if(miniMap){
+    const z=3, pc=player.x/MTILE, pr=player.y/MTILE;
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(miniMap, cx-pc*z, cy-pr*z, COLS*z, ROWS*z);
+    ctx.fillStyle='#f2c14e';                                   // baús fechados = pontos dourados
+    for(const b of chests){ if(b.st!=='open')
+      ctx.fillRect(cx+(b.c+0.5-pc)*z-2, cy+(b.r+0.5-pr)*z-2, 4, 4); }
+  }
+  ctx.restore();
+  ctx.strokeStyle='rgba(235,240,238,.55)'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,6.28); ctx.stroke();
+  ctx.strokeStyle='rgba(10,16,14,.8)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(cx,cy,R+2.5,0,6.28); ctx.stroke();
+  // ═══════════ Bússola fixa ao redor do minimapa (N sempre no topo) ═══════════
+  const ringIn = R + 5, ringOut = R + 16, ringMid = (ringIn + ringOut) / 2;
+  {
+    ctx.save();
+    // Fundo escuro só na borda (aro fino)
+    ctx.strokeStyle = 'rgba(13,20,17,.65)';
+    ctx.lineWidth = ringOut - ringIn;
+    ctx.beginPath(); ctx.arc(cx, cy, ringMid, 0, 6.28); ctx.stroke();
+    // Borda interna e externa sutis
+    ctx.strokeStyle = 'rgba(235,240,238,.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, ringIn, 0, 6.28); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, ringOut, 0, 6.28); ctx.stroke();
+
+    const cardLabels = {0:'N', 90:'E', 180:'S', 270:'W'};
+    for (let d = 0; d < 360; d += 15) {
+      const isCardinal = d % 90 === 0;
+      const a = d * Math.PI / 180 - Math.PI / 2;   // fixo: N=topo, E=direita, S=baixo, W=esquerda
+      if (isCardinal) {
+        // Label no meio do anel
+        const lx = cx + Math.cos(a) * ringMid;
+        const ly = cy + Math.sin(a) * ringMid;
+        ctx.fillStyle = d === 0 ? '#f2c14e' : '#fff';
+        ctx.font = 'bold 12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cardLabels[d], lx, ly);
+      } else {
+        // Traço só onde não tem letra
+        const tInner = ringIn + 3;
+        const tOuter = ringOut - 2;
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * tInner, cy + Math.sin(a) * tInner);
+        ctx.lineTo(cx + Math.cos(a) * tOuter, cy + Math.sin(a) * tOuter);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  const ang=player.headingS;                                      // seta do player (direção do movimento)
+  ctx.save(); ctx.translate(cx,cy); ctx.rotate(ang+Math.PI/2);
+  ctx.fillStyle='#fff'; ctx.strokeStyle='#1a2420'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(-5.5,6); ctx.lineTo(0,2.5); ctx.lineTo(5.5,6);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  // chips: relógio + jogadores
+  const chH=32, chY=cy+ringOut+12;
+  const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
+  hudChip(cx+R-64, chY, 64, chH, '👤', '1');
+  hudChip(cx+R-64-8-104, chY, 104, chH, '🕐', mm+':'+ss);
+}
+function hudChip(x,y,w,h,icone,txt){
+  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x,y,w,h,8); ctx.fill();
+  ctx.strokeStyle='rgba(230,240,235,.35)'; ctx.lineWidth=1.5; roundRect(x,y,w,h,8); ctx.stroke();
+  ctx.font='15px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(icone, x+9, y+h/2+1);
+  ctx.fillStyle='#fff'; ctx.font='bold 15px system-ui';
+  ctx.fillText(txt, x+32, y+h/2+1);
+}
+function hudSlot(x,y,num,ativo){
+  ctx.fillStyle='rgba(13,22,19,.85)'; roundRect(x,y,96,78,12); ctx.fill();
+  ctx.strokeStyle=ativo?'rgba(242,193,78,.85)':'rgba(235,240,238,.35)'; ctx.lineWidth=ativo?2:1.5;
+  roundRect(x,y,96,78,12); ctx.stroke();
+  ctx.fillStyle='#f2c14e'; roundRect(x+6,y+6,18,18,4); ctx.fill();
+  ctx.fillStyle='#3a2c10'; ctx.font='bold 12px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(num, x+15, y+16);
+}
+function drawSlots(){
+  const sw=96, sh=78, gap=10, x0=VW/2-(sw*2+gap)/2, y0=VH-sh-18;
+  hudSlot(x0, y0, '1', true);
+  hudSlot(x0+sw+gap, y0, '2', false);
+  ctx.imageSmoothingEnabled=false;
+  if(IMG.weapons) ctx.drawImage(IMG.weapons, WEAPONS[gun].spr*SPR,0, SPR,SPR, x0+sw/2-22, y0+6, 44,44);
+  ctx.fillStyle='#fff'; ctx.font='bold 14px system-ui'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillText('∞', x0+sw/2-12, y0+sh-11);
+  ctx.fillStyle='#f2c14e';
+  for(let i=0;i<3;i++){ roundRect(x0+sw/2+2+i*6.5, y0+sh-20, 3.6, 11, 1.8); ctx.fill(); }
+  if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, x0+sw+gap+sw/2-20, y0+8, 40,40);
+  ctx.fillStyle = medkits>0 ? '#fff' : 'rgba(255,255,255,.35)';
+  ctx.font='bold 15px system-ui';
+  ctx.fillText(''+medkits, x0+sw+gap+sw/2, y0+sh-11);
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
@@ -899,6 +1012,7 @@ function frame(t){
 function start(){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
+  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=50;
   const s=findSpawn(), sv=collInfo(coll[s]);
   player.x=(s%COLS)*MTILE+MTILE/2; player.y=((s/COLS)|0)*MTILE+MTILE/2;
   player.L = (sv && sv.levels) ? sv.levels[0] : 0;
