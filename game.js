@@ -261,6 +261,8 @@ let kills = 0;                      // abates (bots ainda não existem — já f
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
 let hpGhost = 100, armorGhost = 50; // trilha "fantasma" das barras (dano recente escorre)
+let shieldRechargeTimer = 0;      // segundos sem tomar dano (após 5s, recarrega escudo)
+let prevHp = 100;                 // hp do frame anterior (pra detectar dano)
 let miniMap = null, miniBg = '#c99a63';     // offscreen 1px/célula + cor dominante
 let zoneState = 'idle', zoneTimer = 0, zoneDmgTimer = 0, zoneNum = 0;   // idle|waiting|shrinking
 let zoneCurrent = null, zoneNext = null;      // {cx,cy,r} em px (world coords)
@@ -305,6 +307,17 @@ function step(dt){
   // Trilha fantasma das barras: cura acompanha na hora, dano escorre devagar
   hpGhost    = player.hp    > hpGhost    ? player.hp    : Math.max(player.hp,    hpGhost    - dt*30);
   armorGhost = player.armor > armorGhost ? player.armor : Math.max(player.armor, armorGhost - dt*30);
+  // ── Recarga do escudo: 5s sem dano → regenera 10/s até 100 ──
+  if(player.armor < 100){
+    shieldRechargeTimer += dt;
+    if(shieldRechargeTimer >= 5){
+      player.armor = Math.min(100, player.armor + dt*10);
+    }
+  } else {
+    shieldRechargeTimer = 0;
+  }
+  if(player.hp < prevHp) shieldRechargeTimer = 0;   // tomou dano → reseta recarga
+  prevHp = player.hp;
   let dx=0,dy=0;
   if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
   if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
@@ -1351,10 +1364,17 @@ function drawBars(){
   ctx.beginPath(); ctx.arc(acx,acy,ar+2,0,6.28); ctx.stroke();
   // Barras à direita do avatar
   const bx=X+96, bw=W-96-70, sl=5;
-  // Colete (fina, em cima)
-  tinyShield(bx-13, Y+25, 7, '#8fd132');
-  vitalBar(bx, Y+18, bw*0.82, 12, player.armor, armorGhost, 100, '#a5e04a', '#69a91f', sl);
-  ctx.fillStyle='#cfe8b0'; ctx.font='bold 12px system-ui';
+  // Escudo (fina, em cima)
+  tinyShield(bx-13, Y+25, 7, '#4aa3ff');
+  vitalBar(bx, Y+18, bw*0.82, 12, player.armor, armorGhost, 100, '#5ab5ff', '#2878cc', sl);
+  // Glow de recarga: brilha na ponta enquanto regenera
+  if(player.armor < 100 && shieldRechargeTimer >= 5){
+    const rgw = bw*0.82*clamp(player.armor/100,0,1);
+    slantBar(bx+rgw-3, Y+18, 6, 12, sl);
+    ctx.fillStyle = 'rgba(130,210,255,'+(0.35+0.25*Math.sin(performance.now()/1000*6)).toFixed(3)+')';
+    ctx.fill();
+  }
+  ctx.fillStyle='#b0d8ff'; ctx.font='bold 12px system-ui';
   ctx.textAlign='left'; ctx.textBaseline='middle';
   ctx.fillText(''+(player.armor|0), bx+bw*0.82+12, Y+25);
   // HP (grossa, embaixo)
@@ -1892,8 +1912,9 @@ function frame(t){
 function start(){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
-  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=50;
-  hpGhost=100; armorGhost=50;
+  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=0;
+  hpGhost=100; armorGhost=0;
+  shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
   healAura=0;
   const s=findSpawn(), sv=collInfo(coll[s]);
