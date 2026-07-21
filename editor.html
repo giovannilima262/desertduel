@@ -213,11 +213,12 @@ function collInfo(v){
   if(v>=20 && v<30){ const s=v-20; return {kind:'escada', levels:[s,s+1], color:'rgba(85,150,255,0.60)', label:s+'↕'+(s+1)}; }  // legado (adjacente)
   if(v>=100 && v<200){ const lo=((v-100)/10|0), hi=(v-100)%10;               // escada que liga dois níveis quaisquer
     return {kind:'escada', levels: lo===hi?[lo]:[lo,hi], color:'rgba(85,150,255,0.60)', label:lo+'↕'+hi}; }
+  if(v>=200 && v<210){ const L=v-200; return {kind:'spawn', levels:[L], color:'rgba(244,201,93,0.62)', label:'S'+L}; }  // spawn em andar elevado
   return null;
 }
 function collValue(){
   if(collKind==='block') return 1;
-  if(collKind==='spawn') return 2;
+  if(collKind==='spawn') return collLevel>0 ? 200+collLevel : 2;   // nível 0 mantém o valor clássico (mapas antigos)
   if(collKind==='mato')   return 0;   // mato is independent — never stored in coll[]
   if(collKind==='sombra') return 0;   // sombra is independent too
   if(collKind==='piso')   return 10+collLevel;
@@ -937,7 +938,7 @@ function canStep(fromVal, L, toVal, toOver){
   const bridge = bridgeActive(toOver, L);
   if(B && B.kind==='escada'){ if(B.levels.includes(L)) return L; return bridge ? L : null; }
   if(B && (B.kind==='piso'||B.kind==='spawn')){
-    const M = B.kind==='spawn' ? 0 : B.level;
+    const M = B.kind==='spawn' ? B.levels[0] : B.level;
     if(M===L) return L;
     if(A && A.kind==='escada' && A.levels.includes(L) && A.levels.includes(M)) return M;  // off a stair
     return bridge ? L : null;                                             // a bridge (of your level) lets you pass
@@ -954,7 +955,7 @@ function heroAxis(nx,ny,horiz){
   if(horiz) hero.x=nx; else hero.y=ny;
   const nc=Math.floor(hero.x/cell), nr=Math.floor(hero.y/cell);
   const nv=collInfo(collAt(nc,nr));                                       // adopt the floor's level — but an ACTIVE bridge never changes it
-  if(!bridgeActive(overAt(nc,nr),hero.L) && nv && nv.kind!=='escada') hero.L = nv.kind==='spawn'?0:nv.level;
+  if(!bridgeActive(overAt(nc,nr),hero.L) && nv && nv.kind!=='escada') hero.L = nv.kind==='spawn'?nv.levels[0]:nv.level;
 }
 function heroStep(dt){
   let dx=0,dy=0;
@@ -967,7 +968,7 @@ function heroStep(dt){
 }
 function startTest(){
   let start=null;
-  for(let i=0;i<coll.length;i++){ if(coll[i]===2){ start=i; break; } }            // prefer a Spawn
+  for(let i=0;i<coll.length;i++){ const v=coll[i]; if(v===2||(v>=200&&v<210)){ start=i; break; } }  // prefer a Spawn (qualquer andar)
   if(start===null) for(let i=0;i<coll.length;i++){ const ci=collInfo(coll[i]); if(ci&&ci.kind==='piso'){ start=i; break; } }
   if(start===null) for(let i=0;i<mato.length;i++){ if(mato[i]){ start=i; break; } }  // mato cell (decorative, but walkable)
   if(start===null) for(let i=0;i<sombra.length;i++){ if(sombra[i]){ start=i; break; } }  // sombra cell
@@ -975,7 +976,7 @@ function startTest(){
   if(start===null){ alert('Pinte Piso (e Escada) antes de testar — o boneco anda sobre o Piso.'); return; }
   testMode=true; mode='test';
   const sv=collInfo(coll[start]);
-  const startL = sv&&sv.level!=null ? sv.level : (over[start]?over[start]-1:0);   // a bridge start adopts its level
+  const startL = sv ? (sv.levels ? sv.levels[0] : sv.level) : (over[start]?over[start]-1:0);   // a bridge start adopts its level
   hero={ x:(start%cols)*cell+cell/2, y:((start/cols)|0)*cell+cell/2, L:startL };
   testKeys={}; $('testBtn').classList.add('on'); $('testBtn').textContent='■ Parar (Esc)';
   $('collGroup').querySelectorAll('.ck,#lvlDn,#lvlUp,#saDn,#saUp,#sbDn,#sbUp').forEach(b=>b.disabled=true);
@@ -1000,10 +1001,10 @@ window.__cellPx=()=>cell;
 
 function refreshCollUI(){
   document.querySelectorAll('#collGroup .ck').forEach(b=>b.classList.toggle('on', b.dataset.kind===collKind));
-  const isPiso = collKind==='piso', isEsc = collKind==='escada', isPonte = collKind==='ponte';
+  const isPiso = collKind==='piso', isEsc = collKind==='escada', isPonte = collKind==='ponte', isSpawn = collKind==='spawn';
   const isMato = collKind==='mato', isArmas = collKind==='armas', isBau = collKind==='bau';
-  const showLvl = isPiso || isPonte;                      // ponte também escolhe o nível a que se liga
-  $('lvlLbl').style.display = showLvl?'':'none'; $('lvlLbl').textContent = isPonte?'Liga ao nível':'Nível';
+  const showLvl = isPiso || isPonte || isSpawn;           // ponte também escolhe o nível a que se liga; spawn precisa do andar onde nasce
+  $('lvlLbl').style.display = showLvl?'':'none'; $('lvlLbl').textContent = isPonte?'Liga ao nível':(isSpawn?'Nível do spawn':'Nível');
   $('lvlDn').style.display = $('lvlUp').style.display = $('lvlVal').style.display = showLvl?'':'none';
   $('stairCtl').style.display = isEsc?'':'none';
   $('gunSel').style.display = (isArmas||isBau)?'':'none';   // no baú, o gunSel escolhe a arma a ADICIONAR
