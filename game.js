@@ -431,6 +431,12 @@ function step(dt){
     p.vy += (0 - p.vy)*Math.min(1, dt*5);
   }
   dmgPops = dmgPops.filter(p => p.t < p.dur);
+  // Caveira de morte: sobe e desacelera até quase parar (flutua)
+  for(const p of deathPops){
+    p.t += dt; p.y += p.vy*dt;
+    p.vy += (0 - p.vy)*Math.min(1, dt*1.6);
+  }
+  deathPops = deathPops.filter(p => p.t < p.dur);
   // Pegadas no chão — spawn a cada 12px percorridos
   if(player.moving){
     const s = SPEED*dt;
@@ -726,14 +732,34 @@ function spawnEnemies(){
   }
   enemies.push({ x:sc*MTILE+MTILE/2, y:er*MTILE+MTILE/2, L:eL,
     hp:100, maxHp:100, st:'alive', flashT:0 });
-  dmgPops = [];
+  dmgPops = []; deathPops = [];
 }
 function damageEnemy(e, dmg, hx, hy){
   e.hp -= dmg; e.flashT = 0.12;
   const kill = e.hp <= 0;
   spawnDmgPop(hx ?? e.x, (hy ?? e.y-6) - 6, dmg, kill);
-  if(kill){ e.hp = 0; e.st='dead'; kills++; enemyDieSound(); }
+  if(kill){ e.hp = 0; e.st='dead'; kills++; enemyDieSound(); spawnDeathPop(e.x, e.y-6); }
   else enemyHitSound();
+}
+// ── Caveira saindo do corpo ao morrer: sobe, balança e some (ícone da folha interface) ──
+let deathPops = [];   // {x,y,vy,t,dur,sway}
+function spawnDeathPop(x, y){
+  deathPops.push({ x, y, vy:-16, t:0, dur:1.5, sway:Math.random()*6.28 });
+}
+function drawDeathPops(){
+  if(!IMG.interface) return;
+  for(const p of deathPops){
+    const k = p.t/p.dur;
+    const sc = k<0.18 ? 0.3+(k/0.18)*1.05 : 1.35-Math.min(1,(k-0.18)/0.3)*0.35;  // pop com overshoot
+    const ds = 20*sc;
+    const sx = p.x + Math.sin(p.t*4+p.sway)*4;
+    ctx.save();
+    ctx.translate(sx, p.y);
+    ctx.globalAlpha = k>0.55 ? Math.max(0, 1-(k-0.55)/0.45) : 1;
+    ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, -ds/2, -ds/2, ds, ds);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
 }
 //======================= FONTE BITMAP (folha interface) =======================
 // Linhas 5-7 da folha: % + - 0-9 · A-M · N-Z (tiles 16px, glifo útil ~10px, y1-14).
@@ -934,7 +960,7 @@ function drawEnemy(e){
   if(e.st==='alive'){
     // barra de vida da folha interface acima da cabeça (trilho branco + laranja)
     const bw=MTILE*1.5, bh=bw*14/64;
-    drawUIBar(e.x-bw/2, e.y-SPR-1, bw, bh, 'orange', e.hp/e.maxHp);
+    drawUIBar(e.x-bw/2, e.y-SPR+4, bw, bh, 'orange', e.hp/e.maxHp);
   }
 }
 
@@ -990,7 +1016,7 @@ function updateZone(dt){
     zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
     zoneShrinkDur = zoneNum >= MAX_ZONES - 4 ? ZONE_SHRINK_FAST : ZONE_SHRINK;
     zoneState = 'shrinking'; zoneTimer = zoneShrinkDur;
-    showZoneBanner('A ZONA ESTÁ FECHANDO', 'corra para o círculo branco', '#ff8c3c');
+    showZoneBanner('A ZONA ESTÁ FECHANDO', 'corra para a área segura', '#ff8c3c');
   } else if(zoneState==='final'){
     // Fechamento derradeiro: raio vai até ~1 tile
     const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
@@ -1127,7 +1153,25 @@ function drawZoneOverlay(){
   ctx.restore();
 }
 function showZoneBanner(text, sub, color){
-  zoneBanner = { text, sub, color, t:3.4, dur:3.4 };
+  zoneBanner = { text, sub, color, t:5, dur:5 };
+}
+// ── Seta da folha interface (triângulo, x48,y64 — 3 colunas à esquerda do "arrow-up") tingida por cor ──
+const ZONE_ARROW_SRC = {sx:48, sy:64, s:16};
+const zoneArrowCache = {};
+function zoneArrowSheet(rgb){
+  let c = zoneArrowCache[rgb];
+  if(!c){
+    const {sx,sy,s} = ZONE_ARROW_SRC;
+    c = document.createElement('canvas'); c.width=s; c.height=s;
+    const g = c.getContext('2d'); g.imageSmoothingEnabled=false;
+    g.drawImage(IMG.interface, sx, sy, s, s, 0, 0, s, s);
+    g.globalCompositeOperation='multiply';
+    g.fillStyle=rgb; g.fillRect(0, 0, s, s);
+    g.globalCompositeOperation='destination-in';
+    g.drawImage(IMG.interface, sx, sy, s, s, 0, 0, s, s);
+    zoneArrowCache[rgb] = c;
+  }
+  return c;
 }
 //── FX de zona em espaço de tela (vinheta, seta pra safe, banner) ──
 function drawZoneFX(){
@@ -1155,17 +1199,19 @@ function drawZoneFX(){
     const ang = Math.atan2(target.cy - player.y, target.cx - player.x);
     const m = Math.max(0, Math.round((Math.hypot(player.x-target.cx, player.y-target.cy) - target.r)/MTILE));
     const bob = Math.sin(T*4)*3;
-    ctx.save();
-    ctx.translate(psx + Math.cos(ang)*(86+bob), psy + Math.sin(ang)*(86+bob));
-    ctx.rotate(ang);
-    ctx.fillStyle = col; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(13,0); ctx.lineTo(-7,-9); ctx.lineTo(-3,0); ctx.lineTo(-7,9);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.restore();
+    if(IMG.interface){
+      const asz = 26;
+      ctx.save();
+      ctx.translate(psx + Math.cos(ang)*(52+bob), psy + Math.sin(ang)*(52+bob));
+      ctx.rotate(ang + Math.PI/2);   // o ícone da folha aponta pra cima — alinha com a direção calculada
+      ctx.imageSmoothingEnabled=false;
+      ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=3;
+      ctx.drawImage(zoneArrowSheet(col), -asz/2, -asz/2, asz, asz);
+      ctx.restore();
+    }
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 4;
-    drawBmpText(m+'M', psx + Math.cos(ang)*114, psy + Math.sin(ang)*114, 13, {color:col, align:'center'});
+    drawBmpText(m+'M', psx + Math.cos(ang)*82, psy + Math.sin(ang)*82, 20, {color:col, align:'center'});
     ctx.restore();
   }
   // ── Banner de anúncio (centro-topo, fade in/out) ──
@@ -1177,14 +1223,14 @@ function drawZoneFX(){
     ctx.save();
     ctx.globalAlpha = a;
     ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8;
-    drawBmpText(b.text, VW/2, y, 32, {color:b.color, align:'center', valign:'alphabetic'});
+    drawBmpText(b.text, VW/2, y, 40, {color:b.color, align:'center', valign:'alphabetic'});
     ctx.shadowBlur = 0;
-    const lw = bmpTextW(b.text, 32);
+    const lw = bmpTextW(b.text, 40);
     ctx.fillStyle = 'rgba(255,255,255,.35)';
-    ctx.fillRect(VW/2 - lw/2, y+8, lw, 1.5);
+    ctx.fillRect(VW/2 - lw/2, y+10, lw, 1.5);
     if(b.sub){
       ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 5;
-      drawBmpText(b.sub, VW/2, y+28, 14, {color:'rgba(255,255,255,.88)', align:'center', valign:'alphabetic'});
+      drawBmpText(b.sub, VW/2, y+34, 17, {color:'rgba(255,255,255,.88)', align:'center', valign:'alphabetic'});
     }
     ctx.restore();
   }
@@ -1385,7 +1431,7 @@ function draw(){
     // Barra de carregamento na parte superior do baú
     if(b.st==='charging'){
       const p = Math.min(1, b.t/CHEST_CHARGE[b.v]);    // progresso 0→1
-      drawUIBar(b.c*MTILE, b.r*MTILE - 7, MTILE, 4.5, 'orange', p);
+      drawUIBar(b.c*MTILE, b.r*MTILE - 7, MTILE, 4.5, 'blue', p);
     }
     if(IMG.weapons) for(const f of b.loot){
       const k=Math.min(1, f.t0/f.dur);
@@ -1482,8 +1528,9 @@ function draw(){
 	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
 	    ctx.stroke();
   }
-  // 3e) Números de dano — por cima de tudo no mundo
+  // 3e) Números de dano + caveira de morte — por cima de tudo no mundo
   drawDmgPops();
+  drawDeathPops();
   // ── Aura verde de cura ──
   if(healAura > 0){
     const t = performance.now()/1000;
@@ -1567,25 +1614,23 @@ function slantBar(x,y,w,h,s){
   ctx.lineTo(x+w, y+h); ctx.lineTo(x, y+h);
   ctx.closePath();
 }
-//── Ícones pequenos desenhados (coração e escudo) ──
-function tinyHeart(x,y,s,color){
+//── Ícones em grade de pixel (blocos retos — combina com o resto da UI, sem curvas suaves) ──
+// pattern: array de strings, 'X' = célula pintada, '.' = transparente (deixa o fundo do card aparecer)
+function drawPixelGlyph(pattern, cx, cy, cell, color){
+  const gh=pattern.length, gw=pattern[0].length;
   ctx.fillStyle=color;
-  ctx.beginPath();
-  ctx.moveTo(x, y+s*0.9);
-  ctx.bezierCurveTo(x-s, y+s*0.1, x-s*0.9, y-s*0.8, x, y-s*0.15);
-  ctx.bezierCurveTo(x+s*0.9, y-s*0.8, x+s, y+s*0.1, x, y+s*0.9);
-  ctx.fill();
+  for(let r=0;r<gh;r++){
+    const row=pattern[r];
+    for(let c=0;c<gw;c++){
+      if(row[c]==='X'){
+        const x=Math.round(cx+(c-gw/2)*cell), y=Math.round(cy+(r-gh/2)*cell);
+        ctx.fillRect(x, y, Math.ceil(cell), Math.ceil(cell));
+      }
+    }
+  }
 }
-function tinyShield(x,y,s,color){
-  ctx.fillStyle=color;
-  ctx.beginPath();
-  ctx.moveTo(x, y-s);
-  ctx.quadraticCurveTo(x+s, y-s*0.7, x+s, y-s*0.05);
-  ctx.quadraticCurveTo(x+s, y+s*0.55, x, y+s);
-  ctx.quadraticCurveTo(x-s, y+s*0.55, x-s, y-s*0.05);
-  ctx.quadraticCurveTo(x-s, y-s*0.7, x, y-s);
-  ctx.fill();
-}
+// Ampulheta: só triângulos retos (nada de círculo) — TEMPO
+const GLYPH_HOURGLASS = ['XXXXXXX','.XXXXX.','..XXX..','...X...','..XXX..','.XXXXX.','XXXXXXX'];
 //── Barra de status com trilha fantasma de dano e segmentos ──
 function vitalBar(x,y,w,h,val,ghost,max,c1,c2,slant){
   // Track
@@ -1619,8 +1664,9 @@ function drawBars(){
   // Painel — card cinza da folha interface
   drawCard(X, Y, W, H, UI_CARD.gray, 12);
   if(lowHp){
+    // Reto — o card da folha tem cantos vivos, um contorno arredondado destoaria
     ctx.strokeStyle='rgba(255,60,40,'+(0.45+0.35*Math.sin(T*6)).toFixed(3)+')';
-    ctx.lineWidth=2; roundRect(X+2,Y+2,W-4,H-4,10); ctx.stroke();
+    ctx.lineWidth=2; ctx.strokeRect(X+2,Y+2,W-4,H-4);
   }
   // Avatar dentro do medalhão redondo da folha
   const acx=X+44, acy=Y+H/2, ar=30;
@@ -1636,20 +1682,21 @@ function drawBars(){
   }
   ctx.restore();
   // Barras à direita do avatar (sem ícones — as cores já dizem o que é)
-  const bx=X+90, bw=W-90-70, sl=5;
-  // Escudo (fina, em cima)
-  drawUIBar(bx, Y+19, bw*0.82, 12, 'blue', player.armor/100, armorGhost/100);
+  // Mesma largura pras duas — números alinham numa coluna só — e bem coladas uma na outra
+  const bx=X+90, bw=W-90-70;
+  const shY=Y+24, shH=15, gapBars=3, hpY=shY+shH+gapBars, hpH=25;
+  drawUIBar(bx, shY, bw, shH, 'blue', player.armor/100, armorGhost/100);
   // Glow de recarga: brilha na ponta enquanto regenera
   if(player.armor < 100 && shieldRechargeTimer >= 5){
-    const rgw = bw*0.82*clamp(player.armor/100,0,1);
+    const rgw = bw*clamp(player.armor/100,0,1);
     ctx.fillStyle = 'rgba(130,210,255,'+(0.35+0.25*Math.sin(performance.now()/1000*6)).toFixed(3)+')';
-    ctx.fillRect(bx+rgw-3, Y+20, 5, 10);
+    ctx.fillRect(bx+rgw-3, shY+2, 5, shH-4);
   }
-  drawBmpText(player.armor|0, bx+bw*0.82+12, Y+25, 13, {color:'#b0d8ff'});
+  drawBmpText(player.armor|0, bx+bw+14, shY+shH/2+1, 15, {color:'#b0d8ff'});
   // HP (grossa, embaixo)
-  drawUIBar(bx, Y+44, bw, 17, 'orange', player.hp/100, hpGhost/100);
-  // Número grande de HP
-  drawBmpText(player.hp|0, bx+bw+14, Y+53, 26, {color: lowHp ? '#ff8d75' : '#fff'});
+  drawUIBar(bx, hpY, bw, hpH, 'orange', player.hp/100, hpGhost/100);
+  // Número grande de HP — mesma coluna do escudo, acima
+  drawBmpText(player.hp|0, bx+bw+14, hpY+hpH/2+1, 26, {color: lowHp ? '#ff8d75' : '#fff'});
   ctx.restore();
   // Pulso vermelho na tela com HP baixo
   if(lowHp && player.hp>0){
@@ -1743,7 +1790,7 @@ function drawMinimap(){
   ctx.restore();
   // ═══════════ Painel BR abaixo do minimapa ═══════════
   const T=performance.now()/1000;
-  const panelW=172, panelX=cx-panelW/2, panelTop=cy+ringOut+14;
+  const panelW=196, panelX=(cx+R)-panelW, panelTop=cy+ringOut+14;   // encostado na borda direita do minimapa
   const inSafe = zoneCurrent && Math.hypot(player.x-zoneCurrent.cx, player.y-zoneCurrent.cy) <= zoneCurrent.r;
 
   // Cores por estado da zona
@@ -1771,7 +1818,7 @@ function drawMinimap(){
 
   // ── Cards soltos da folha (zona colorida por estado + tiles cinza) ──
   const zoneOn = zoneState!=='idle';
-  const zoneH=96, tilesH=46;
+  const zoneH=110, tilesH=54;
 
   let py=panelTop;
 
@@ -1785,24 +1832,24 @@ function drawMinimap(){
     drawCard(zx, py, zw, zh, zCard, 10);
 
     // Header: label + ícone de status (menor, no topo direito)
-    drawBmpText('ZONA', zx+12, py+9, 10, {color:'rgba(255,255,255,.75)', valign:'top'});
-    ctx.save(); ctx.translate(zx+zw-18, py+16); ctx.scale(0.68,0.68);
+    drawBmpText('ZONA', zx+14, py+10, 12, {color:'rgba(255,255,255,.75)', valign:'top'});
+    ctx.save(); ctx.translate(zx+zw-20, py+19);
     drawZoneIcon(0, 0, zIcon, 'rgb(255,255,255)');
     ctx.restore();
 
     // Número da zona (ou FINAL) + timer pulsando quando urgente
-    drawBmpText(zoneState==='final' ? 'FINAL' : (zoneNum+1)+'/'+MAX_ZONES, zx+12, py+21, 24, {color:'#fff', valign:'top'});
+    drawBmpText(zoneState==='final' ? 'FINAL' : (zoneNum+1)+'/'+MAX_ZONES, zx+14, py+25, 28, {color:'#fff', valign:'top'});
     const tScale = zUrgent ? 1+0.07*Math.sin(T*8) : 1;
     ctx.save();
-    ctx.translate(zx+zw-13, py+37); ctx.scale(tScale,tScale);
+    ctx.translate(zx+zw-14, py+42); ctx.scale(tScale,tScale);
     // 'S' menor que os dígitos — senão "28S" lê como "285"
     const tCol = '#fff';   // urgência já é dita pela cor do card + pulso
-    drawBmpText('S', 0, 3, 14, {color:tCol, align:'right'});
-    drawBmpText(Math.ceil(zoneTimer), -bmpTextW('S',14)-2, 0, 26, {color:tCol, align:'right'});
+    drawBmpText('S', 0, 3, 16, {color:tCol, align:'right'});
+    drawBmpText(Math.ceil(zoneTimer), -bmpTextW('S',16)-2, 0, 30, {color:tCol, align:'right'});
     ctx.restore();
 
     // Pips das 10 zonas: passadas · atual (pulsando) · futuras
-    const pipY=py+zh-27, pipL=zx+12, pipSpan=zw-24, step=pipSpan/MAX_ZONES;
+    const pipY=py+zh-30, pipL=zx+14, pipSpan=zw-28, step=pipSpan/MAX_ZONES;
     for(let i=0;i<MAX_ZONES;i++){
       const pcx=pipL+step*i+step/2;
       const cur = i===zoneNum;
@@ -1824,7 +1871,7 @@ function drawMinimap(){
     }
 
     // Barra de progresso — trilho e preenchimento da folha interface
-    const barX=zx+12, barW=zw-24, barY=py+zh-16, barH=8;
+    const barX=zx+14, barW=zw-28, barY=py+zh-18, barH=9;
     drawUIBar(barX, barY, barW, barH, 'orange', zProgress);
 
     py+=zh+6;
@@ -1836,55 +1883,46 @@ function drawMinimap(){
     // ── VIVOS (esquerda) ──
     const vx=panelX, vy=py;
     drawCard(vx, vy, tw2, th, UI_CARD.gray, 8);
-    drawBmpText('VIVOS', vx+10, vy+8, 9, {color:'rgba(255,255,255,.75)', valign:'top'});
-    drawBmpText(1+enemies.filter(e=>e.st==='alive').length, vx+10, vy+18, 20, {color:'#fff', valign:'top'});
-    // Ícone pessoa
-    const hx=vx+tw2-16, hy=vy+th/2+2;
-    ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.3;
-    ctx.beginPath(); ctx.arc(hx, hy-6, 3.6, 0, 6.28); ctx.stroke();
-    ctx.beginPath(); ctx.arc(hx, hy+6, 5.5, Math.PI, 0); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(hx, hy+6); ctx.lineTo(hx, hy+11); ctx.stroke();
+    drawBmpText('VIVOS', vx+12, vy+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText(1+enemies.filter(e=>e.st==='alive').length, vx+12, vy+21, 23, {color:'#fff', valign:'top'});
+    // Ícone: a mesma seta do jogador (bússola/topo da cabeça) — reaproveita o motivo do próprio jogo
+    const hx=vx+tw2-19, hy=vy+th/2+3;
+    ctx.save(); ctx.translate(hx, hy);
+    ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(26,36,32,.6)'; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.moveTo(0,-7); ctx.lineTo(-4.5,5); ctx.lineTo(0,2); ctx.lineTo(4.5,5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
     // ── TEMPO (direita) ──
     const tx=panelX+tw2+6, ty=py;
     drawCard(tx, ty, tw2, th, UI_CARD.gray, 8);
     const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-    drawBmpText('TEMPO', tx+10, ty+8, 9, {color:'rgba(255,255,255,.75)', valign:'top'});
-    drawBmpText(mm+':'+ss, tx+10, ty+20, 16, {color:'#fff', valign:'top'});
-    // Relógio pequeno com ponteiro girando (divertido)
-    const icx=tx+tw2-16, icy=ty+th/2+2;
-    ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.2;
-    ctx.beginPath(); ctx.arc(icx, icy, 7, 0, 6.28); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx, icy-4); ctx.stroke();
-    const secAng=(elapsedT%60)/60*Math.PI*2 - Math.PI/2;
-    ctx.beginPath(); ctx.moveTo(icx, icy);
-    ctx.lineTo(icx+Math.cos(secAng)*5, icy+Math.sin(secAng)*5); ctx.stroke();
+    drawBmpText('TEMPO', tx+12, ty+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText(mm+':'+ss, tx+12, ty+23, 18, {color:'#fff', valign:'top'});
+    // Ampulheta em blocos + grão de areia caindo pelo gargalo (só retas, sem círculo)
+    const icx=tx+tw2-19, icy=ty+th/2+3;
+    drawPixelGlyph(GLYPH_HOURGLASS, icx, icy, 2.1, 'rgba(255,255,255,.85)');
+    const dropK=(T*0.9)%1, dropY=icy-6+dropK*12;
+    ctx.fillStyle='rgba(255,255,255,.85)';
+    ctx.fillRect(Math.round(icx-1), Math.round(dropY), 2, 2);
   }
 }
 //── Ícones de status da zona (desenhados com Canvas) ──
 function drawZoneIcon(ix,iy,type,color){
+  if(type===0){       // ═══ SAFE — losango sólido, o mesmo motivo dos pips da zona ═══
+    ctx.save(); ctx.translate(ix,iy); ctx.rotate(Math.PI/4);
+    ctx.shadowColor=color; ctx.shadowBlur=5;
+    ctx.fillStyle=color; ctx.fillRect(-7,-7,14,14);
+    ctx.restore();
+    return;
+  }
+  // Tipos 1-4: ainda em curvas vetoriais — mantém a escala 0.8 original pra esses
   ctx.save();
+  ctx.scale(0.8,0.8);
   ctx.strokeStyle=color; ctx.fillStyle=color;
   ctx.lineWidth=2; ctx.lineCap='round'; ctx.lineJoin='round';
   const S=11; // raio base do ícone
 
-  if(type===0){       // ═══ SHIELD — escudo com checkmark ═══
-    // Escudo pontudo
-    ctx.fillStyle=color.replace(')',',.20)').replace('rgb','rgba');
-    ctx.beginPath();
-    ctx.moveTo(ix,iy-S-1);                              // topo
-    ctx.quadraticCurveTo(ix+S*1.1,iy-S*0.8, ix+S*1.1,iy-S*0.1);  // ombro direito
-    ctx.lineTo(ix+S*0.5,iy+S*0.6);                      // ponta direita baixa
-    ctx.quadraticCurveTo(ix+S*0.2,iy+S*0.3, ix,iy+S*0.9);         // curva inferior direita → ponta
-    ctx.quadraticCurveTo(ix-S*0.2,iy+S*0.3, ix-S*0.5,iy+S*0.6);   // ponta → curva inferior esquerda
-    ctx.lineTo(ix-S*1.1,iy-S*0.1);                      // ombro esquerdo
-    ctx.quadraticCurveTo(ix-S*1.1,iy-S*0.8, ix,iy-S-1);           // volta ao topo
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-    // Checkmark interno
-    ctx.strokeStyle=color; ctx.lineWidth=2.5;
-    ctx.beginPath();
-    ctx.moveTo(ix-5,iy); ctx.lineTo(ix-1,iy+4); ctx.lineTo(ix+6,iy-4);
-    ctx.stroke();
-  }else if(type===1){ // ═══ WARNING — triângulo com "!" em paths ═══
+  if(type===1){ // ═══ WARNING — triângulo com "!" em paths ═══
     ctx.fillStyle=color.replace(')',',.20)').replace('rgb','rgba');
     ctx.beginPath();
     ctx.moveTo(ix,iy-S-1); ctx.lineTo(ix+S+1,iy+S); ctx.lineTo(ix-S-1,iy+S);
@@ -1989,43 +2027,43 @@ function tinyFlame(x,y,s,color,flicker){
 }
 //── Keycap (tecla desenhada no canto do slot) ──
 function keycap(x,y,label,gold){
-  drawCard(x, y, 18, 18, gold ? UI_CARD.gold : UI_CARD.gray, 5);   // mini-card da folha
-  drawBmpText(label, x+9, y+10, 11, {color:'#fff', align:'center'});
+  drawCard(x, y, 22, 22, gold ? UI_CARD.gold : UI_CARD.gray, 6);   // mini-card da folha
+  drawBmpText(label, x+11, y+12, 13, {color:'#fff', align:'center'});
 }
 function drawSlots(){
   const T=performance.now()/1000;
   const w=WEAPONS[gun];
   const M=20;                                   // margem da borda
   // ═══ Geometria dos slots primeiro — o cartão de calor alinha exato com eles ═══
-  const s1W=100, s1H=76, s2W=80, s2H=64, gap=10;
+  const s1W=116, s1H=88, s2W=94, s2H=74, gap=6;
   const s2X=VW-M-s2W, s2Y=VH-18-s2H;
   const s1X=s2X-gap-s1W, s1Y=VH-18-s1H;
   // ═══ Cartão da arma: linha 1 = nome · modo · temperatura | linha 2 = termômetro cheio ═══
-  const iH=52, iW=s1W+gap+s2W, iX=s1X, iY=s1Y-8-iH;
+  const iH=58, iW=s1W+gap+s2W, iX=s1X, iY=s1Y-8-iH;
   drawCard(iX, iY, iW, iH, UI_CARD.gray, 10);
   const hc = heatColor(Math.round(gunHeat*24)/24);   // quantizado — cache de tinta da fonte por cor
   const temp = (20 + gunHeat*180)|0;                         // 20°C fria → 200°C estourando
   const blink = gunOverheat ? (Math.sin(T*10)>0 ? 1 : 0.35) : 1;
   // ── Linha 1: nome + chip de modo à esquerda, temperatura à direita ──
-  const r1=iY+16;
-  const nomeW = drawBmpText(w.nome, iX+12, r1, 13, {color:'#fff'});
-  const chX=iX+12+nomeW+8, chW=34;
-  ctx.fillStyle='#47324b'; roundRect(chX, r1-7, chW, 14, 4); ctx.fill();   // inset roxo da paleta
-  drawBmpText(w.auto?'AUTO':'SEMI', chX+chW/2, r1+1, 9,
+  const r1=iY+19;
+  const nomeW = drawBmpText(w.nome, iX+14, r1, 15, {color:'#fff'});
+  const chX=iX+14+nomeW+10, chW=40;
+  ctx.fillStyle='#47324b'; roundRect(chX, r1-5, chW, 16, 4); ctx.fill();   // inset roxo da paleta
+  drawBmpText(w.auto?'AUTO':'SEMI', chX+chW/2, r1+4, 10,
     {color: w.auto ? '#f2c14e' : 'rgba(255,255,255,.7)', align:'center'});
   // Temperatura à direita + chaminha que cresce com o calor
   ctx.save(); ctx.globalAlpha=blink;
-  const tempW = drawBmpText(temp+'°C', iX+iW-12, r1+1, 16,
+  const tempW = drawBmpText(temp+'°C', iX+iW-14, r1+1, 18,
     {color:(gunHeat>0.5||gunOverheat) ? hc : '#fff', align:'right'});
   ctx.restore();
   if(gunHeat>0.05){
     const fl=Math.sin(T*22)*0.5+Math.sin(T*13.7)*0.5;
     ctx.save(); ctx.globalAlpha=0.35+gunHeat*0.65;
-    tinyFlame(iX+iW-12-tempW-10, r1+1, 3.5+gunHeat*4, hc, fl);
+    tinyFlame(iX+iW-14-tempW-11, r1+1, 4+gunHeat*4.5, hc, fl);
     ctx.restore();
   }
   // ── Linha 2: termômetro de largura total (azul frio → vermelho brasa) ──
-  const hbX=iX+12, hbW=iW-24, hbH=12, hbY=iY+iH-19;
+  const hbX=iX+14, hbW=iW-28, hbH=13, hbY=iY+iH-21;
   drawUIBar(hbX, hbY, hbW, hbH, 'orange', 0);           // só o trilho da folha
   if(gunHeat>0.02){
     ctx.save();
@@ -2055,12 +2093,13 @@ function drawSlots(){
   drawCard(s1X, s1Y, s1W, s1H, UI_CARD.gold, 10);   // card dourado = slot ativo
   // Borda: dourada fria → vermelha em brasa; pisca quando superaquece
   const hotBorder = gunHeat>0.35 ? heatColor(0.5+((gunHeat-0.35)/0.65)*0.5) : '#f2c14e';
+  // Reto — o card da folha tem cantos vivos, um contorno arredondado destoaria
   ctx.save();
   ctx.shadowColor=hotBorder; ctx.shadowBlur=8+gunHeat*8;
   ctx.globalAlpha = gunOverheat ? (0.55+0.45*Math.sin(T*10)) : 1;
-  ctx.strokeStyle=hotBorder; ctx.lineWidth=2; roundRect(s1X,s1Y,s1W,s1H,12); ctx.stroke();
+  ctx.strokeStyle=hotBorder; ctx.lineWidth=2; ctx.strokeRect(s1X,s1Y,s1W,s1H);
   ctx.restore();
-  keycap(s1X+7, s1Y+7, '1', true);
+  keycap(s1X+8, s1Y+8, '1', true);
   // Sprite da arma (com bounce na troca)
   ctx.save();
   ctx.imageSmoothingEnabled=false;
@@ -2068,10 +2107,10 @@ function drawSlots(){
   if(swapAnim){ const bt=swapAnim.t/swapAnim.total; ws=0.5+0.5*bt+Math.sin(bt*Math.PI)*0.3*(1-bt); }
   ctx.translate(s1X+s1W/2, s1Y+s1H/2-4);
   ctx.scale(ws,ws);
-  if(IMG.weapons) ctx.drawImage(IMG.weapons, w.spr*SPR,0, SPR,SPR, -26, -26, 52,52);
+  if(IMG.weapons) ctx.drawImage(IMG.weapons, w.spr*SPR,0, SPR,SPR, -30, -30, 60,60);
   ctx.restore();
   // Nome pequeno na base do slot
-  drawBmpText(w.nome, s1X+s1W/2, s1Y+s1H-10, 9, {color:'rgba(255,255,255,.75)', align:'center'});
+  drawBmpText(w.nome, s1X+s1W/2, s1Y+s1H-16, 11, {color:'rgba(255,255,255,.75)', align:'center'});
 
   // ── Slot 2: medkit ──
   const canHeal = medkits>0 && player.hp<100;
@@ -2081,17 +2120,17 @@ function drawSlots(){
     ? 'rgba(143,209,50,'+(0.45+0.35*Math.sin(T*4)).toFixed(3)+')'
     : 'rgba(255,255,255,.18)';
   ctx.lineWidth = canHeal ? 1.8 : 1.2;
-  roundRect(s2X,s2Y,s2W,s2H,11); ctx.stroke();
-  keycap(s2X+6, s2Y+6, '2', false);
+  ctx.strokeRect(s2X,s2Y,s2W,s2H);   // reto — casa com os cantos vivos do card
+  keycap(s2X+7, s2Y+7, '2', false);
   ctx.save();
   ctx.imageSmoothingEnabled=false;
   if(medkits<=0) ctx.globalAlpha=0.35;
-  if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, s2X+s2W/2-17, s2Y+s2H/2-19, 34,34);
+  if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, s2X+s2W/2-20, s2Y+s2H/2-22, 40,40);
   ctx.restore();
   // Contador (badge no canto)
   ctx.fillStyle = medkits>0 ? '#47324b' : 'rgba(71,50,75,.45)';
-  roundRect(s2X+s2W-25, s2Y+s2H-23, 19, 17, 6); ctx.fill();
-  drawBmpText('X'+medkits, s2X+s2W-15.5, s2Y+s2H-14, 10,
+  roundRect(s2X+s2W-28, s2Y+s2H-26, 22, 19, 6); ctx.fill();
+  drawBmpText('X'+medkits, s2X+s2W-17, s2Y+s2H-16.5, 11,
     {color: medkits>0 ? '#fff' : 'rgba(255,255,255,.35)', align:'center'});
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
