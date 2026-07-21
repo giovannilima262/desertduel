@@ -329,6 +329,16 @@ function step(dt){
     moveAxis(player.x+dx/l*s, player.y, true);
     moveAxis(player.x, player.y+dy/l*s, false);
   }
+  // ── Inimigos: colisor igual ao do player (empurra pra fora) + timers ──
+  for(const e of enemies){
+    e.flashT = Math.max(0, e.flashT - dt);
+    if(e.st!=='alive') continue;                       // corpo morto não colide
+    const ex=player.x-e.x, ey=player.y-e.y, d=Math.hypot(ex,ey), min=PLAYER_R*2;
+    if(d<min){
+      const nx = d>0.001 ? ex/d : 1, ny = d>0.001 ? ey/d : 0;
+      player.x = e.x + nx*min; player.y = e.y + ny*min;
+    }
+  }
   // Suaviza heading (bússola e minimapa seguem o movimento, não o mouse)
   let hd = player.heading - player.headingS;
   hd = Math.atan2(Math.sin(hd), Math.cos(hd));          // normaliza para [-PI, PI]
@@ -415,6 +425,12 @@ function step(dt){
   bullets = bullets.filter(b => b.life > 0);
   for(const h of hits){ h.life -= dt; }
   hits = hits.filter(h => h.life > 0);
+  // Números de dano: sobem rápido e "pairam" (vy decai pra zero)
+  for(const p of dmgPops){
+    p.t += dt; p.x += p.vx*dt; p.y += p.vy*dt;
+    p.vy += (0 - p.vy)*Math.min(1, dt*5);
+  }
+  dmgPops = dmgPops.filter(p => p.t < p.dur);
   // Pegadas no chão — spawn a cada 12px percorridos
   if(player.moving){
     const s = SPEED*dt;
@@ -529,6 +545,32 @@ function overheatSound(){
   const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
   o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
 }
+function enemyHitSound(){
+  // thud curto e grave — bala acertou carne
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  const o=audioCtx.createOscillator(); o.type='square';
+  o.frequency.setValueAtTime(340,t); o.frequency.exponentialRampToValueAtTime(120,t+0.07);
+  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.07,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.08);
+}
+function enemyDieSound(){
+  // tom descendo (desinflando) + ruído de baque
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  const o=audioCtx.createOscillator(); o.type='triangle';
+  o.frequency.setValueAtTime(520,t); o.frequency.exponentialRampToValueAtTime(60,t+0.28);
+  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.10,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.30);
+  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.30);
+  const len=0.12, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.2));
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.08,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(500,t);
+  src.connect(lp); lp.connect(ng); ng.connect(audioCtx.destination);
+  src.start(t); src.stop(t+len);
+}
 function scatterChestLoot(b){
   const bx = b.c*MTILE+MTILE/2, by = b.r*MTILE+MTILE/2;
   const dirs = [[0,1],[1,0],[-1,0],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
@@ -638,6 +680,18 @@ function bulletStep(b, dt){
   // Raycast do frame: ajusta posição e nível com obstáculos
   const nextX = b.x + b.vx*dt, nextY = b.y + b.vy*dt;
   const hit = raycast(b.x, b.y, nextX, nextY, b.level);
+  // Inimigo no caminho? (segmento do frame vs sprite inteiro — sem tunneling)
+  let eHit=null, eBest=Infinity, ePt=null;
+  for(const e of enemies){
+    if(e.st!=='alive' || e.L!==b.level) continue;
+    const h=segRectHit(b.x, b.y, hit.x, hit.y, bodyRect(e.x, e.y));
+    if(h && h.t<eBest){ eBest=h.t; eHit=e; ePt=h; }
+  }
+  if(eHit){
+    damageEnemy(eHit, GUN_DMG[b.w]||10, ePt.x, ePt.y);
+    b.x=ePt.x; b.y=ePt.y; b.tx=b.x; b.ty=b.y; b.life=0;   // faísca no ponto do impacto
+    return;
+  }
   b.x = hit.x; b.y = hit.y; b.level = hit.L;
   // Chegou no destino ou bateu em algo = faísca
   const dxNext = nextX - b.x, dyNext = nextY - b.y;
@@ -652,6 +706,236 @@ function findSpawn(){
   for(let i=0;i<coll.length;i++) if(coll[i]===2) return i;              // Spawn pintado
   for(let i=0;i<coll.length;i++){ const ci=collInfo(coll[i]); if(ci&&ci.kind==='piso') return i; }
   return 0;
+}
+
+//======================= INIMIGOS =======================
+// Sem inteligência por enquanto: parado, com colisor igual ao do player,
+// barra de vida na cabeça, toma dano de tiro e morre no último frame da linha.
+const ENEMY_ROW   = 3;              // linha do sprite na folha enemies (boneco azul)
+const ENEMY_DEAD  = 3;              // último frame da linha = morto
+const GUN_DMG = { pistola:12, magnum:30, uzi:7, sniper:65, carabina:13, fuzil:15, smg:6, escopeta:8 };
+let enemies = [];
+function spawnEnemies(){
+  enemies = [];
+  const s = findSpawn(), sc = s%COLS, sr = (s/COLS)|0;
+  // primeira célula pisável bem abaixo do spawn do player
+  let er = sr+3, eL = 0;
+  for(let r=sr+2; r<ROWS; r++){
+    const ci = collInfo(collAt(sc, r));
+    if(ci && ci.kind!=='block'){ er = r; eL = ci.levels ? ci.levels[0] : 0; break; }
+  }
+  enemies.push({ x:sc*MTILE+MTILE/2, y:er*MTILE+MTILE/2, L:eL,
+    hp:100, maxHp:100, st:'alive', flashT:0 });
+  dmgPops = [];
+}
+function damageEnemy(e, dmg, hx, hy){
+  e.hp -= dmg; e.flashT = 0.12;
+  const kill = e.hp <= 0;
+  spawnDmgPop(hx ?? e.x, (hy ?? e.y-6) - 6, dmg, kill);
+  if(kill){ e.hp = 0; e.st='dead'; kills++; enemyDieSound(); }
+  else enemyHitSound();
+}
+//======================= FONTE BITMAP (folha interface) =======================
+// Linhas 5-7 da folha: % + - 0-9 · A-M · N-Z (tiles 16px, glifo útil ~10px, y1-14).
+// Glifos que a folha não tem (: / ° ! .) são desenhados à mão na mesma paleta,
+// numa 4ª linha do canvas base. Tingida por cor via multiply (cache por cor).
+const FONT_OUT='#47324b', FONT_FACE='#ffffff', FONT_SH='#999ac4';   // paleta amostrada da folha
+const GLYPH_W = { I:6, J:8, M:12, W:12, '1':8, '+':8, '-':8, ':':5, '.':5, '!':4, '/':12, '°':7, ' ':5 };
+const glyphW = ch => GLYPH_W[ch] ?? 10;
+const fontBases = {};   // 'flat' (linhas 8-10, sem sombra — layout) | 'shaded' (linhas 5-7 — dano)
+const fontCache = {};
+function glyphPos(ch){
+  const c = ch.charCodeAt(0);
+  if(ch>='0'&&ch<='9') return [3+(c-48), 0];
+  if(ch>='A'&&ch<='M') return [c-65, 1];
+  if(ch>='N'&&ch<='Z') return [c-78, 2];
+  if(ch==='%') return [0,0];
+  if(ch==='+') return [1,0];
+  if(ch==='-') return [2,0];
+  const extra = {':':0, '/':1, '°':2, '!':3, '.':4};
+  if(ch in extra) return [extra[ch], 3];
+  return null;
+}
+function buildFontBase(style){
+  const base = document.createElement('canvas'); base.width=208; base.height=64;
+  const g = base.getContext('2d'); g.imageSmoothingEnabled=false;
+  g.drawImage(IMG.interface, 0, (style==='flat' ? 8 : 5)*16, 208, 48, 0, 0, 208, 48);
+  const y = 48, sh = style!=='flat';   // 4ª linha: glifos extras (chapado = sem sombra)
+  const dot=(x,dy)=>{ g.fillStyle=FONT_OUT; g.fillRect(x,y+dy,5,5);
+    g.fillStyle=FONT_FACE; g.fillRect(x+1,y+dy+1,3,sh?2:3);
+    if(sh){ g.fillStyle=FONT_SH; g.fillRect(x+1,y+dy+3,3,1); } };
+  dot(0*16+5, 2); dot(0*16+5, 9);                       // ':'
+  dot(4*16+5, 9);                                       // '.'
+  {                                                     // '/' em degraus de pixel (stroke antialiasado destoa)
+    const px=1*16, cells=[];
+    for(let yy=0; yy<12; yy++) cells.push([Math.round(10 - yy*6/11), 2+yy]);
+    g.fillStyle=FONT_OUT;
+    for(const [cx,cy] of cells) g.fillRect(px+cx-1, y+cy-1, 4, 3);
+    g.fillStyle=FONT_FACE;
+    for(const [cx,cy] of cells) g.fillRect(px+cx, y+cy, 2, 1);
+  }
+  g.strokeStyle=FONT_OUT; g.lineWidth=3.4;              // '°'
+  g.beginPath(); g.arc(2*16+8, y+4.5, 3, 0, 6.29); g.stroke();
+  g.strokeStyle=FONT_FACE; g.lineWidth=1.4;
+  g.beginPath(); g.arc(2*16+8, y+4.5, 3, 0, 6.29); g.stroke();
+  g.fillStyle=FONT_OUT; g.fillRect(3*16+6, y+1, 4, 8);  // '!'
+  g.fillStyle=FONT_FACE; g.fillRect(3*16+7, y+2, 2, sh?5:6);
+  if(sh){ g.fillStyle=FONT_SH; g.fillRect(3*16+7, y+7, 2, 1); }
+  g.fillStyle=FONT_OUT; g.fillRect(3*16+6, y+10, 4, 4);
+  g.fillStyle=FONT_FACE; g.fillRect(3*16+7, y+11, 2, 2);
+  fontBases[style] = base;
+  return base;
+}
+function fontSheet(rgb, style){
+  const key = style+'|'+rgb;
+  let c = fontCache[key];
+  if(!c){
+    const base = fontBases[style] || buildFontBase(style);
+    c = document.createElement('canvas'); c.width=base.width; c.height=base.height;
+    const g = c.getContext('2d'); g.imageSmoothingEnabled=false;
+    g.drawImage(base, 0, 0);
+    g.globalCompositeOperation='multiply';
+    g.fillStyle=rgb; g.fillRect(0, 0, c.width, c.height);
+    g.globalCompositeOperation='destination-in';        // multiply mata o alpha — restaura
+    g.drawImage(base, 0, 0);
+    fontCache[key] = c;
+  }
+  return c;
+}
+function splitColor(c){    // 'rgba(r,g,b,a)' → cor sólida + alpha (o cache só aceita cor sólida)
+  const m = /^rgba\(([^,]+),([^,]+),([^,]+),([^)]+)\)$/.exec((''+c).replace(/\s/g,''));
+  return m ? {rgb:'rgb('+m[1]+','+m[2]+','+m[3]+')', a:+m[4]} : {rgb:c, a:1};
+}
+function bmpNorm(str){
+  // NFD separa acentos em combinantes (̀-ͯ) — remove e caixa alta
+  return (''+str).normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[—–]/g,'-');
+}
+// Desenha texto com a fonte da folha. o = {color, align:left|center|right,
+// valign:middle|top|alphabetic, alpha, ls (letter-spacing em px da folha, pode ser negativo)}
+// Devolve a largura desenhada.
+function drawBmpText(str, x, y, size, o={}){
+  if(!IMG.interface) return 0;
+  str = bmpNorm(str);
+  const k = size/16, ls = (o.ls ?? 0)*k;
+  let W = 0;
+  for(const ch of str) W += glyphW(ch)*k + ls;
+  if(str.length) W -= ls;
+  const {rgb, a} = splitColor(o.color || '#ffffff');
+  const sheet = fontSheet(rgb, o.shaded ? 'shaded' : 'flat');   // layout usa o chapado; dano usa o com sombra
+  let cx = o.align==='center' ? x - W/2 : o.align==='right' ? x - W : x;
+  const ty = o.valign==='top' ? y - 1*k : o.valign==='alphabetic' ? y - 14.5*k : y - 8*k;
+  const pa = ctx.globalAlpha, aa = a*(o.alpha ?? 1);
+  if(aa !== 1) ctx.globalAlpha = pa*aa;
+  for(const ch of str){
+    const gw = glyphW(ch), gp = glyphPos(ch);
+    if(gp) ctx.drawImage(sheet, gp[0]*16, gp[1]*16, 16, 16, cx-(16-gw)/2*k, ty, size, size);
+    cx += gw*k + ls;
+  }
+  ctx.globalAlpha = pa;
+  return W;
+}
+function bmpTextW(str, size, ls=0){
+  str = bmpNorm(str);
+  const k = size/16; let W = 0;
+  for(const ch of str) W += glyphW(ch)*k + ls*k;
+  return str.length ? W - ls*k : 0;
+}
+
+//======================= CARDS E BARRAS DA FOLHA INTERFACE =======================
+// Cards 48x48 no topo da folha (x = idx*48): medalhão redondo, dourado, laranja, cinza, vermelho, azul.
+const UI_CARD = { medal:0, gold:1, orange:2, gray:3, red:4, blue:5 };
+function drawCard(x,y,w,h,idx,bs=12){
+  if(!IMG.interface) return;
+  const S=48, B=8, sx=idx*S, img=IMG.interface;
+  const m=(a,b,c,d, dx,dy,dw,dh)=>ctx.drawImage(img, sx+a, b, c, d, x+dx, y+dy, dw, dh);
+  ctx.imageSmoothingEnabled=false;
+  m(0,0,B,B,       0,0,bs,bs);           m(S-B,0,B,B,     w-bs,0,bs,bs);      // cantos
+  m(0,S-B,B,B,     0,h-bs,bs,bs);        m(S-B,S-B,B,B,   w-bs,h-bs,bs,bs);
+  m(B,0,S-2*B,B,   bs,0,w-2*bs,bs);      m(B,S-B,S-2*B,B, bs,h-bs,w-2*bs,bs); // bordas
+  m(0,B,B,S-2*B,   0,bs,bs,h-2*bs);      m(S-B,B,B,S-2*B, w-bs,bs,bs,h-2*bs);
+  m(B,B,S-2*B,S-2*B, bs,bs,w-2*bs,h-2*bs);                                    // centro
+}
+// Barras 64px de largura em x208-271: branca (container/vazia), laranja (HP), azul (escudo)
+const UI_BARS = { white:{sy:97,sh:14}, orange:{sy:113,sh:14}, blue:{sy:130,sh:12} };
+function uiBarSlice(b, x,y,w,h){
+  const cap=5, sx=208, sw=64, ck=Math.min(w*0.33, cap*(h/b.sh));
+  ctx.drawImage(IMG.interface, sx, b.sy, cap, b.sh, x, y, ck, h);
+  // miolo: só a faixa limpa do 1º segmento (x214-239) — evita o divisor do asset em x247
+  ctx.drawImage(IMG.interface, sx+cap+1, b.sy, 26, b.sh, x+ck, y, w-2*ck, h);
+  ctx.drawImage(IMG.interface, sx+sw-cap, b.sy, cap, b.sh, x+w-ck, y, ck, h);
+}
+function drawUIBar(x,y,w,h,color,pct,ghost){
+  if(!IMG.interface) return;
+  ctx.imageSmoothingEnabled=false;
+  uiBarSlice(UI_BARS.white, x,y,w,h);                     // trilho vazio
+  pct=clamp(pct,0,1);
+  if(ghost!==undefined && (ghost=clamp(ghost,0,1)) > pct+0.004){
+    ctx.save(); ctx.beginPath(); ctx.rect(x+w*pct, y, w*(ghost-pct), h); ctx.clip();
+    const pa=ctx.globalAlpha; ctx.globalAlpha=pa*0.5;     // trilha fantasma do dano recente
+    uiBarSlice(UI_BARS[color], x,y,w,h);
+    ctx.globalAlpha=pa; ctx.restore();
+  }
+  if(pct>0.01){
+    ctx.save(); ctx.beginPath(); ctx.rect(x, y, w*pct, h); ctx.clip();
+    uiBarSlice(UI_BARS[color], x,y,w,h);
+    ctx.restore();
+  }
+}
+
+// ── Números de dano ──
+const DMG_COLOR = '#f2c14e', DMG_COLOR_KILL = '#ff5040';   // dourado; vermelho no golpe fatal
+let dmgPops = [];      // {x,y,vx,vy,t,dur,val,big}
+function spawnDmgPop(x, y, val, big){
+  dmgPops.push({ x: x + (Math.random()*2-1)*4, y,
+    vx:(Math.random()*2-1)*10, vy:-(42+Math.random()*14),
+    t:0, dur: big?0.9:0.65, val: Math.round(val), big:!!big });
+}
+function drawDmgPops(){
+  if(!IMG.interface) return;
+  for(const p of dmgPops){
+    const k = p.t/p.dur;
+    // Pop com overshoot: nasce pequeno, estoura e assenta; fade no fim
+    const sc = k<0.15 ? 0.4 + (k/0.15)*0.95 : 1.35 - Math.min(1,(k-0.15)/0.25)*0.35;
+    const ds = (p.big ? 12 : 8.5) * sc;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.globalAlpha = k>0.65 ? Math.max(0, 1-(k-0.65)/0.35) : 1;
+    drawBmpText(p.val, 0, 0, ds, {color: p.big ? DMG_COLOR_KILL : DMG_COLOR, align:'center', ls:-2, shaded:true});
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+// Hitbox de bala: o SPRITE inteiro (24x24 ancorado nos pés, mesmo desenho na tela).
+// Vale igual pro inimigo e pro player — quando inimigos atirarem, usar bodyRect(player.x, player.y).
+function bodyRect(x,y){ return { x0:x-SPR/2, y0:y-6-SPR/2, x1:x+SPR/2, y1:y-6+SPR/2 }; }
+// segmento (x1,y1)→(x2,y2) cruza o retângulo? devolve o ponto de ENTRADA (slab method)
+function segRectHit(x1,y1,x2,y2,rc){
+  const dx=x2-x1, dy=y2-y1;
+  let t0=0, t1=1;
+  const p=[-dx, dx, -dy, dy], q=[x1-rc.x0, rc.x1-x1, y1-rc.y0, rc.y1-y1];
+  for(let i=0;i<4;i++){
+    if(Math.abs(p[i])<1e-9){ if(q[i]<0) return null; }      // paralelo e fora do slab
+    else{
+      const t=q[i]/p[i];
+      if(p[i]<0){ if(t>t1) return null; if(t>t0) t0=t; }
+      else      { if(t<t0) return null; if(t<t1) t1=t; }
+    }
+  }
+  return { t:t0, x:x1+dx*t0, y:y1+dy*t0 };
+}
+function drawEnemy(e){
+  const frame = e.st==='dead' ? ENEMY_DEAD : 0;
+  ctx.fillStyle='rgba(0,0,0,0.28)';
+  ctx.beginPath(); ctx.ellipse(e.x, e.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
+  ctx.save(); ctx.translate(e.x, e.y-6);
+  if(e.flashT>0) ctx.filter='brightness(2.2) saturate(0.4)';   // flash branco ao levar tiro
+  ctx.drawImage(IMG.enemies, frame*SPR, ENEMY_ROW*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+  ctx.restore();
+  if(e.st==='alive'){
+    // barra de vida da folha interface acima da cabeça (trilho branco + laranja)
+    const bw=MTILE*1.5, bh=bw*14/64;
+    drawUIBar(e.x-bw/2, e.y-SPR-1, bw, bh, 'orange', e.hp/e.maxHp);
+  }
 }
 
 //======================= ZONAS =======================
@@ -881,9 +1165,7 @@ function drawZoneFX(){
     ctx.restore();
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 4;
-    ctx.fillStyle = col; ctx.font = 'bold 12px system-ui';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(m+'m', psx + Math.cos(ang)*114, psy + Math.sin(ang)*114);
+    drawBmpText(m+'M', psx + Math.cos(ang)*114, psy + Math.sin(ang)*114, 13, {color:col, align:'center'});
     ctx.restore();
   }
   // ── Banner de anúncio (centro-topo, fade in/out) ──
@@ -894,18 +1176,15 @@ function drawZoneFX(){
     const y = 92 - (1 - Math.min(1,aIn))*14;
     ctx.save();
     ctx.globalAlpha = a;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
     ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8;
-    ctx.fillStyle = b.color; ctx.font = 'bold 30px system-ui';
-    ctx.fillText(b.text, VW/2, y);
+    drawBmpText(b.text, VW/2, y, 32, {color:b.color, align:'center', valign:'alphabetic'});
     ctx.shadowBlur = 0;
-    const lw = ctx.measureText(b.text).width;
+    const lw = bmpTextW(b.text, 32);
     ctx.fillStyle = 'rgba(255,255,255,.35)';
     ctx.fillRect(VW/2 - lw/2, y+8, lw, 1.5);
     if(b.sub){
       ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 5;
-      ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.font = '600 13px system-ui';
-      ctx.fillText(b.sub, VW/2, y+28);
+      drawBmpText(b.sub, VW/2, y+28, 14, {color:'rgba(255,255,255,.88)', align:'center', valign:'alphabetic'});
     }
     ctx.restore();
   }
@@ -989,6 +1268,12 @@ function draw(){
       const sp=(b.st==='open')?v.open:v.closed;
       ctx.drawImage(IMG.tiles, sp[0]*16, sp[1]*16, 16, 16, b.c*MTILE, b.r*MTILE, MTILE, MTILE);
     }
+  }
+
+  // 1.95) inimigos — mortos primeiro (corpo no chão), vivos por cima
+  if(IMG.enemies){
+    for(const e of enemies) if(e.st==='dead')  drawEnemy(e);
+    for(const e of enemies) if(e.st!=='dead')  drawEnemy(e);
   }
 
   // 2) player (sombra + mascote 24px, ancorado nos pés)
@@ -1100,16 +1385,7 @@ function draw(){
     // Barra de carregamento na parte superior do baú
     if(b.st==='charging'){
       const p = Math.min(1, b.t/CHEST_CHARGE[b.v]);    // progresso 0→1
-      const bw = MTILE - 2, bh = 3;                    // tamanho da barra
-      const bx = b.c*MTILE + 1, by = b.r*MTILE - 5;    // acima do baú
-      ctx.save();
-      // fundo da barra (cinza escuro)
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(bx, by, bw, bh);
-      // preenchimento (cor do baú)
-      ctx.fillStyle = CHEST_COLORS[b.v];
-      ctx.fillRect(bx, by, bw * p, bh);
-      ctx.restore();
+      drawUIBar(b.c*MTILE, b.r*MTILE - 7, MTILE, 4.5, 'orange', p);
     }
     if(IMG.weapons) for(const f of b.loot){
       const k=Math.min(1, f.t0/f.dur);
@@ -1206,6 +1482,8 @@ function draw(){
 	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
 	    ctx.stroke();
   }
+  // 3e) Números de dano — por cima de tudo no mundo
+  drawDmgPops();
   // ── Aura verde de cura ──
   if(healAura > 0){
     const t = performance.now()/1000;
@@ -1338,49 +1616,40 @@ function drawBars(){
   const W=332, H=88, X=20, Y=VH-H-18;
   const lowHp = player.hp<=30;
   ctx.save();
-  // Painel
-  const pg=ctx.createLinearGradient(X,Y,X,Y+H);
-  pg.addColorStop(0,'rgba(14,22,18,.86)'); pg.addColorStop(1,'rgba(8,13,11,.92)');
-  ctx.fillStyle=pg; roundRect(X,Y,W,H,14); ctx.fill();
-  ctx.strokeStyle= lowHp ? 'rgba(255,60,40,'+(0.45+0.35*Math.sin(T*6)).toFixed(3)+')' : 'rgba(255,255,255,.14)';
-  ctx.lineWidth=lowHp?2:1.2; roundRect(X,Y,W,H,14); ctx.stroke();
-  // Avatar circular (sprite do player)
+  // Painel — card cinza da folha interface
+  drawCard(X, Y, W, H, UI_CARD.gray, 12);
+  if(lowHp){
+    ctx.strokeStyle='rgba(255,60,40,'+(0.45+0.35*Math.sin(T*6)).toFixed(3)+')';
+    ctx.lineWidth=2; roundRect(X+2,Y+2,W-4,H-4,10); ctx.stroke();
+  }
+  // Avatar dentro do medalhão redondo da folha
   const acx=X+44, acy=Y+H/2, ar=30;
-  ctx.fillStyle='#0d1714'; ctx.beginPath(); ctx.arc(acx,acy,ar,0,6.28); ctx.fill();
+  if(IMG.interface){
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(IMG.interface, 0, 0, 48, 48, acx-ar-6, acy-ar-6, (ar+6)*2, (ar+6)*2);
+  }
   ctx.save();
-  ctx.beginPath(); ctx.arc(acx,acy,ar-1.5,0,6.28); ctx.clip();
+  ctx.beginPath(); ctx.arc(acx,acy,ar*0.8,0,6.28); ctx.clip();
   if(IMG.players){
     ctx.imageSmoothingEnabled=false;
     ctx.drawImage(IMG.players, 0, (player.skin||0)*SPR, SPR, SPR, acx-33, acy-30, 66, 66);
   }
   ctx.restore();
-  ctx.strokeStyle='#f2c14e'; ctx.lineWidth=2.5;
-  ctx.beginPath(); ctx.arc(acx,acy,ar,0,6.28); ctx.stroke();
-  ctx.strokeStyle='rgba(0,0,0,.5)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(acx,acy,ar+2,0,6.28); ctx.stroke();
-  // Barras à direita do avatar
-  const bx=X+96, bw=W-96-70, sl=5;
+  // Barras à direita do avatar (sem ícones — as cores já dizem o que é)
+  const bx=X+90, bw=W-90-70, sl=5;
   // Escudo (fina, em cima)
-  tinyShield(bx-13, Y+25, 7, '#4aa3ff');
-  vitalBar(bx, Y+18, bw*0.82, 12, player.armor, armorGhost, 100, '#5ab5ff', '#2878cc', sl);
+  drawUIBar(bx, Y+19, bw*0.82, 12, 'blue', player.armor/100, armorGhost/100);
   // Glow de recarga: brilha na ponta enquanto regenera
   if(player.armor < 100 && shieldRechargeTimer >= 5){
     const rgw = bw*0.82*clamp(player.armor/100,0,1);
-    slantBar(bx+rgw-3, Y+18, 6, 12, sl);
     ctx.fillStyle = 'rgba(130,210,255,'+(0.35+0.25*Math.sin(performance.now()/1000*6)).toFixed(3)+')';
-    ctx.fill();
+    ctx.fillRect(bx+rgw-3, Y+20, 5, 10);
   }
-  ctx.fillStyle='#b0d8ff'; ctx.font='bold 12px system-ui';
-  ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(''+(player.armor|0), bx+bw*0.82+12, Y+25);
+  drawBmpText(player.armor|0, bx+bw*0.82+12, Y+25, 13, {color:'#b0d8ff'});
   // HP (grossa, embaixo)
-  tinyHeart(bx-13, Y+52, 7.5, lowHp?'#ff6a55':'#ff5a4a');
-  vitalBar(bx, Y+44, bw, 19, player.hp, hpGhost, 100,
-    lowHp?'#ff7a5a':'#ff6448', lowHp?'#d92c1f':'#cf3322', sl);
+  drawUIBar(bx, Y+44, bw, 17, 'orange', player.hp/100, hpGhost/100);
   // Número grande de HP
-  ctx.fillStyle = lowHp ? '#ff8d75' : '#fff';
-  ctx.font='bold 26px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(''+(player.hp|0), bx+bw+14, Y+53);
+  drawBmpText(player.hp|0, bx+bw+14, Y+53, 26, {color: lowHp ? '#ff8d75' : '#fff'});
   ctx.restore();
   // Pulso vermelho na tela com HP baixo
   if(lowHp && player.hp>0){
@@ -1389,16 +1658,14 @@ function drawBars(){
     g.addColorStop(0,'rgba(180,20,10,0)'); g.addColorStop(1,'rgba(180,20,10,'+a.toFixed(3)+')');
     ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
   }
-  // ═══ Chip de abates (topo esquerdo, compacto) ═══
-  const kW=104, kH=38, kX=20, kY=18;
-  ctx.fillStyle='rgba(10,16,14,.80)'; roundRect(kX,kY,kW,kH,19); ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,.12)'; ctx.lineWidth=1; roundRect(kX,kY,kW,kH,19); ctx.stroke();
-  ctx.font='18px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText('💀', kX+12, kY+kH/2+1);
-  ctx.fillStyle='#fff'; ctx.font='bold 18px system-ui';
-  ctx.fillText(''+kills, kX+40, kY+kH/2+1);
-  ctx.fillStyle='rgba(255,255,255,.40)'; ctx.font='bold 9px system-ui';
-  ctx.fillText('ABATES', kX+40+(kills>9?26:16), kY+kH/2+2);
+  // ═══ Chip de abates (topo esquerdo, compacto): caveira da folha + número ═══
+  const kW = 60 + bmpTextW(''+kills, 19), kH=38, kX=20, kY=18;
+  drawCard(kX, kY, kW, kH, UI_CARD.gray, 10);
+  if(IMG.interface){
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, kX+9, kY+kH/2-14, 28, 28);
+  }
+  drawBmpText(kills, kX+44, kY+kH/2+1, 19, {color:'#fff'});
 }
 function drawMinimap(){
   const R=64, cx=VW-R-28, cy=R+26;
@@ -1427,20 +1694,20 @@ function drawMinimap(){
     }
   }
   ctx.restore();
-  ctx.strokeStyle='rgba(235,240,238,.55)'; ctx.lineWidth=3;
+  ctx.strokeStyle='#b7b3c8'; ctx.lineWidth=3;
   ctx.beginPath(); ctx.arc(cx,cy,R,0,6.28); ctx.stroke();
-  ctx.strokeStyle='rgba(10,16,14,.8)'; ctx.lineWidth=1.5;
+  ctx.strokeStyle='#47324b'; ctx.lineWidth=2;
   ctx.beginPath(); ctx.arc(cx,cy,R+2.5,0,6.28); ctx.stroke();
   // ═══════════ Bússola fixa ao redor do minimapa (N sempre no topo) ═══════════
   const ringIn = R + 5, ringOut = R + 16, ringMid = (ringIn + ringOut) / 2;
   {
     ctx.save();
     // Fundo escuro só na borda (aro fino)
-    ctx.strokeStyle = 'rgba(13,20,17,.65)';
+    ctx.strokeStyle = 'rgba(40,28,44,.72)';
     ctx.lineWidth = ringOut - ringIn;
     ctx.beginPath(); ctx.arc(cx, cy, ringMid, 0, 6.28); ctx.stroke();
     // Borda interna e externa sutis
-    ctx.strokeStyle = 'rgba(235,240,238,.18)';
+    ctx.strokeStyle = 'rgba(183,179,200,.35)';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(cx, cy, ringIn, 0, 6.28); ctx.stroke();
     ctx.beginPath(); ctx.arc(cx, cy, ringOut, 0, 6.28); ctx.stroke();
@@ -1453,11 +1720,7 @@ function drawMinimap(){
         // Label no meio do anel
         const lx = cx + Math.cos(a) * ringMid;
         const ly = cy + Math.sin(a) * ringMid;
-        ctx.fillStyle = d === 0 ? '#f2c14e' : '#fff';
-        ctx.font = 'bold 12px system-ui';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(cardLabels[d], lx, ly);
+        drawBmpText(cardLabels[d], lx, ly, 13, {color: d===0 ? '#f2c14e' : '#fff', align:'center'});
       } else {
         // Traço só onde não tem letra
         const tInner = ringIn + 3;
@@ -1506,44 +1769,36 @@ function drawMinimap(){
     zUrgent = true;
   }
 
-  // ── Fundo do painel (unifica tudo) ──
+  // ── Cards soltos da folha (zona colorida por estado + tiles cinza) ──
   const zoneOn = zoneState!=='idle';
   const zoneH=96, tilesH=46;
-  const panelH = (zoneOn ? zoneH+6 : 0) + tilesH;
-  ctx.fillStyle='rgba(8,14,12,.82)'; roundRect(panelX-4, panelTop-4, panelW+8, panelH+8, 12); ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,.10)'; ctx.lineWidth=1;
-  roundRect(panelX-4, panelTop-4, panelW+8, panelH+8, 12); ctx.stroke();
 
   let py=panelTop;
 
   // ═══ 1. CARD ZONA ═══
   if(zoneOn){
     const zx=panelX, zw=panelW, zh=zoneH;
-    // Fundo + glow da cor do estado
-    ctx.fillStyle='rgba(12,20,16,.9)'; roundRect(zx, py, zw, zh, 10); ctx.fill();
-    if(zGlow){ ctx.fillStyle=zGlow; roundRect(zx, py, zw, zh, 10); ctx.fill(); }
-    ctx.save(); ctx.shadowColor=zAccent; ctx.shadowBlur=9;
-    ctx.strokeStyle=zAccent; ctx.lineWidth=1.6; roundRect(zx, py, zw, zh, 10); ctx.stroke();
-    ctx.restore();
+    // Card colorido pelo estado (cinza=safe, dourado=alerta, laranja=fechando, vermelho=final)
+    const zCard = zoneState==='final' ? UI_CARD.red
+                : zoneState==='shrinking' ? UI_CARD.orange
+                : inSafe ? UI_CARD.gray : UI_CARD.gold;
+    drawCard(zx, py, zw, zh, zCard, 10);
 
     // Header: label + ícone de status (menor, no topo direito)
-    ctx.fillStyle='rgba(255,255,255,.55)'; ctx.font='bold 10px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('ZONA', zx+12, py+9);
+    drawBmpText('ZONA', zx+12, py+9, 10, {color:'rgba(255,255,255,.75)', valign:'top'});
     ctx.save(); ctx.translate(zx+zw-18, py+16); ctx.scale(0.68,0.68);
-    drawZoneIcon(0, 0, zIcon, zAccent);
+    drawZoneIcon(0, 0, zIcon, 'rgb(255,255,255)');
     ctx.restore();
 
     // Número da zona (ou FINAL) + timer pulsando quando urgente
-    ctx.fillStyle='#fff'; ctx.font='bold 24px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText(zoneState==='final' ? 'FINAL' : (zoneNum+1)+'/'+MAX_ZONES, zx+12, py+21);
+    drawBmpText(zoneState==='final' ? 'FINAL' : (zoneNum+1)+'/'+MAX_ZONES, zx+12, py+21, 24, {color:'#fff', valign:'top'});
     const tScale = zUrgent ? 1+0.07*Math.sin(T*8) : 1;
     ctx.save();
     ctx.translate(zx+zw-13, py+37); ctx.scale(tScale,tScale);
-    ctx.fillStyle = zUrgent ? zAccent : '#fff';
-    ctx.font='bold 26px system-ui'; ctx.textAlign='right'; ctx.textBaseline='middle';
-    ctx.fillText(Math.ceil(zoneTimer)+'s', 0, 0);
+    // 'S' menor que os dígitos — senão "28S" lê como "285"
+    const tCol = '#fff';   // urgência já é dita pela cor do card + pulso
+    drawBmpText('S', 0, 3, 14, {color:tCol, align:'right'});
+    drawBmpText(Math.ceil(zoneTimer), -bmpTextW('S',14)-2, 0, 26, {color:tCol, align:'right'});
     ctx.restore();
 
     // Pips das 10 zonas: passadas · atual (pulsando) · futuras
@@ -1555,41 +1810,22 @@ function drawMinimap(){
       ctx.save();
       ctx.translate(pcx, pipY); ctx.rotate(Math.PI/4);
       if(cur){
-        ctx.shadowColor=zAccent; ctx.shadowBlur=6;
-        ctx.fillStyle=zAccent;
+        ctx.shadowColor='#fff'; ctx.shadowBlur=6;
+        ctx.fillStyle='#fff';
         ctx.fillRect(-s/2,-s/2,s,s);
       } else if(i<zoneNum){
-        ctx.fillStyle='rgba(255,255,255,.40)';
+        ctx.fillStyle='rgba(255,255,255,.55)';
         ctx.fillRect(-s/2,-s/2,s,s);
       } else {
-        ctx.strokeStyle='rgba(255,255,255,.20)'; ctx.lineWidth=1;
+        ctx.strokeStyle='rgba(71,50,75,.6)'; ctx.lineWidth=1;
         ctx.strokeRect(-s/2,-s/2,s,s);
       }
       ctx.restore();
     }
 
-    // Barra de progresso com listras marchando
-    const barX=zx+12, barW=zw-24, barY=py+zh-14, barH=6;
-    ctx.fillStyle='rgba(0,0,0,.45)'; roundRect(barX, barY, barW, barH, barH/2); ctx.fill();
-    const progW=barW*Math.min(1,Math.max(0,zProgress));
-    if(progW>1){
-      ctx.save();
-      roundRect(barX, barY, progW, barH, barH/2); ctx.clip();
-      ctx.fillStyle=zAccent; ctx.fillRect(barX, barY, progW, barH);
-      // Listras diagonais andando
-      ctx.fillStyle='rgba(255,255,255,.22)';
-      const off=(T*16)%12;
-      for(let sx=barX-12+off; sx<barX+progW; sx+=12){
-        ctx.beginPath();
-        ctx.moveTo(sx, barY+barH); ctx.lineTo(sx+4, barY+barH);
-        ctx.lineTo(sx+4+barH, barY); ctx.lineTo(sx+barH, barY);
-        ctx.closePath(); ctx.fill();
-      }
-      ctx.fillStyle='rgba(255,255,255,.20)'; ctx.fillRect(barX, barY, progW, barH*0.4);
-      ctx.restore();
-    }
-    ctx.strokeStyle='rgba(255,255,255,.15)'; ctx.lineWidth=1;
-    roundRect(barX, barY, barW, barH, barH/2); ctx.stroke();
+    // Barra de progresso — trilho e preenchimento da folha interface
+    const barX=zx+12, barW=zw-24, barY=py+zh-16, barH=8;
+    drawUIBar(barX, barY, barW, barH, 'orange', zProgress);
 
     py+=zh+6;
   }
@@ -1599,32 +1835,24 @@ function drawMinimap(){
     const tw2=(panelW-6)/2, th=tilesH;
     // ── VIVOS (esquerda) ──
     const vx=panelX, vy=py;
-    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(vx, vy, tw2, th, 9); ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(vx, vy, tw2, th, 9); ctx.stroke();
-    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 8px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('VIVOS', vx+10, vy+8);
-    ctx.fillStyle='#fff'; ctx.font='bold 20px system-ui';
-    ctx.fillText('1', vx+10, vy+18);
+    drawCard(vx, vy, tw2, th, UI_CARD.gray, 8);
+    drawBmpText('VIVOS', vx+10, vy+8, 9, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText(1+enemies.filter(e=>e.st==='alive').length, vx+10, vy+18, 20, {color:'#fff', valign:'top'});
     // Ícone pessoa
     const hx=vx+tw2-16, hy=vy+th/2+2;
-    ctx.strokeStyle='rgba(255,255,255,.45)'; ctx.lineWidth=1.3;
+    ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.3;
     ctx.beginPath(); ctx.arc(hx, hy-6, 3.6, 0, 6.28); ctx.stroke();
     ctx.beginPath(); ctx.arc(hx, hy+6, 5.5, Math.PI, 0); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(hx, hy+6); ctx.lineTo(hx, hy+11); ctx.stroke();
     // ── TEMPO (direita) ──
     const tx=panelX+tw2+6, ty=py;
-    ctx.fillStyle='rgba(12,20,16,.75)'; roundRect(tx, ty, tw2, th, 9); ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; roundRect(tx, ty, tw2, th, 9); ctx.stroke();
+    drawCard(tx, ty, tw2, th, UI_CARD.gray, 8);
     const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-    ctx.fillStyle='rgba(255,255,255,.45)'; ctx.font='bold 8px system-ui';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('TEMPO', tx+10, ty+8);
-    ctx.fillStyle='#fff'; ctx.font='bold 16px monospace';
-    ctx.fillText(mm+':'+ss, tx+10, ty+20);
+    drawBmpText('TEMPO', tx+10, ty+8, 9, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText(mm+':'+ss, tx+10, ty+20, 16, {color:'#fff', valign:'top'});
     // Relógio pequeno com ponteiro girando (divertido)
     const icx=tx+tw2-16, icy=ty+th/2+2;
-    ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1.2;
+    ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.2;
     ctx.beginPath(); ctx.arc(icx, icy, 7, 0, 6.28); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(icx, icy); ctx.lineTo(icx, icy-4); ctx.stroke();
     const secAng=(elapsedT%60)/60*Math.PI*2 - Math.PI/2;
@@ -1761,12 +1989,8 @@ function tinyFlame(x,y,s,color,flicker){
 }
 //── Keycap (tecla desenhada no canto do slot) ──
 function keycap(x,y,label,gold){
-  ctx.fillStyle = gold ? '#f2c14e' : 'rgba(255,255,255,.16)';
-  roundRect(x,y,17,17,4); ctx.fill();
-  ctx.strokeStyle='rgba(0,0,0,.4)'; ctx.lineWidth=1; roundRect(x,y,17,17,4); ctx.stroke();
-  ctx.fillStyle = gold ? '#3a2c10' : 'rgba(255,255,255,.85)';
-  ctx.font='bold 11px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(label, x+8.5, y+9.5);
+  drawCard(x, y, 18, 18, gold ? UI_CARD.gold : UI_CARD.gray, 5);   // mini-card da folha
+  drawBmpText(label, x+9, y+10, 11, {color:'#fff', align:'center'});
 }
 function drawSlots(){
   const T=performance.now()/1000;
@@ -1778,33 +2002,21 @@ function drawSlots(){
   const s1X=s2X-gap-s1W, s1Y=VH-18-s1H;
   // ═══ Cartão da arma: linha 1 = nome · modo · temperatura | linha 2 = termômetro cheio ═══
   const iH=52, iW=s1W+gap+s2W, iX=s1X, iY=s1Y-8-iH;
-  const ig=ctx.createLinearGradient(iX,iY,iX,iY+iH);
-  ig.addColorStop(0,'rgba(14,22,18,.86)'); ig.addColorStop(1,'rgba(8,13,11,.92)');
-  ctx.fillStyle=ig; roundRect(iX,iY,iW,iH,10); ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,.14)'; ctx.lineWidth=1; roundRect(iX,iY,iW,iH,10); ctx.stroke();
-  const hc = heatColor(gunHeat);
+  drawCard(iX, iY, iW, iH, UI_CARD.gray, 10);
+  const hc = heatColor(Math.round(gunHeat*24)/24);   // quantizado — cache de tinta da fonte por cor
   const temp = (20 + gunHeat*180)|0;                         // 20°C fria → 200°C estourando
   const blink = gunOverheat ? (Math.sin(T*10)>0 ? 1 : 0.35) : 1;
   // ── Linha 1: nome + chip de modo à esquerda, temperatura à direita ──
   const r1=iY+16;
-  ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui';
-  ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(w.nome.toUpperCase(), iX+12, r1);
-  const nomeW=ctx.measureText(w.nome.toUpperCase()).width;
+  const nomeW = drawBmpText(w.nome, iX+12, r1, 13, {color:'#fff'});
   const chX=iX+12+nomeW+8, chW=34;
-  ctx.fillStyle = w.auto ? 'rgba(242,193,78,.18)' : 'rgba(255,255,255,.10)';
-  roundRect(chX, r1-7, chW, 14, 4); ctx.fill();
-  ctx.strokeStyle = w.auto ? 'rgba(242,193,78,.6)' : 'rgba(255,255,255,.25)';
-  ctx.lineWidth=1; roundRect(chX, r1-7, chW, 14, 4); ctx.stroke();
-  ctx.fillStyle = w.auto ? '#f2c14e' : 'rgba(255,255,255,.7)';
-  ctx.font='bold 9px system-ui'; ctx.textAlign='center';
-  ctx.fillText(w.auto?'AUTO':'SEMI', chX+chW/2, r1+1);
+  ctx.fillStyle='#47324b'; roundRect(chX, r1-7, chW, 14, 4); ctx.fill();   // inset roxo da paleta
+  drawBmpText(w.auto?'AUTO':'SEMI', chX+chW/2, r1+1, 9,
+    {color: w.auto ? '#f2c14e' : 'rgba(255,255,255,.7)', align:'center'});
   // Temperatura à direita + chaminha que cresce com o calor
   ctx.save(); ctx.globalAlpha=blink;
-  ctx.fillStyle = (gunHeat>0.5||gunOverheat) ? hc : '#fff';
-  ctx.font='bold 16px system-ui'; ctx.textAlign='right'; ctx.textBaseline='middle';
-  ctx.fillText(temp+'°C', iX+iW-12, r1+1);
-  const tempW=ctx.measureText(temp+'°C').width;
+  const tempW = drawBmpText(temp+'°C', iX+iW-12, r1+1, 16,
+    {color:(gunHeat>0.5||gunOverheat) ? hc : '#fff', align:'right'});
   ctx.restore();
   if(gunHeat>0.05){
     const fl=Math.sin(T*22)*0.5+Math.sin(T*13.7)*0.5;
@@ -1813,23 +2025,22 @@ function drawSlots(){
     ctx.restore();
   }
   // ── Linha 2: termômetro de largura total (azul frio → vermelho brasa) ──
-  const hbX=iX+12, hbW=iW-24, hbH=11, hbY=iY+iH-19;
-  ctx.fillStyle='rgba(0,0,0,.5)'; roundRect(hbX, hbY, hbW, hbH, hbH/2); ctx.fill();
+  const hbX=iX+12, hbW=iW-24, hbH=12, hbY=iY+iH-19;
+  drawUIBar(hbX, hbY, hbW, hbH, 'orange', 0);           // só o trilho da folha
   if(gunHeat>0.02){
     ctx.save();
-    roundRect(hbX, hbY, Math.max(hbH, hbW*gunHeat), hbH, hbH/2); ctx.clip();
+    ctx.beginPath(); ctx.rect(hbX+2, hbY+2, (hbW-4)*gunHeat, hbH-4); ctx.clip();
     const tg=ctx.createLinearGradient(hbX,0,hbX+hbW,0);   // gradiente fixo: a barra "revela" ele
     tg.addColorStop(0,'#4ac1ff'); tg.addColorStop(0.55,'#ffd24a'); tg.addColorStop(1,'#ff3b1e');
     ctx.globalAlpha=blink;
-    ctx.fillStyle=tg; ctx.fillRect(hbX, hbY, hbW, hbH);
-    ctx.fillStyle='rgba(255,255,255,.22)'; ctx.fillRect(hbX, hbY, hbW, hbH*0.45);
-    ctx.restore();
+    ctx.fillStyle=tg; ctx.fillRect(hbX+2, hbY+2, hbW-4, hbH-4);
+    ctx.restore(); ctx.globalAlpha=1;
   }
   // Marcas de 25/50/75%
-  ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.lineWidth=1;
+  ctx.strokeStyle='rgba(71,50,75,.35)'; ctx.lineWidth=1;
   for(let i=1;i<4;i++){
     const tx=hbX+hbW*i/4;
-    ctx.beginPath(); ctx.moveTo(tx, hbY+2); ctx.lineTo(tx, hbY+hbH-2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tx, hbY+3); ctx.lineTo(tx, hbY+hbH-3); ctx.stroke();
   }
   // Superaqueceu: marcador branco piscando em 30% — onde a arma destrava
   if(gunOverheat){
@@ -1838,16 +2049,10 @@ function drawSlots(){
     ctx.beginPath(); ctx.moveTo(hbX+hbW*0.30, hbY-2); ctx.lineTo(hbX+hbW*0.30, hbY+hbH+2); ctx.stroke();
     ctx.restore();
   }
-  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
-  roundRect(hbX, hbY, hbW, hbH, hbH/2); ctx.stroke();
 
   // ═══ Slots (arma ativa + medkit) ═══
   // ── Slot 1: arma (ativo, dourado) ──
-  const g1=ctx.createLinearGradient(s1X,s1Y,s1X,s1Y+s1H);
-  g1.addColorStop(0,'rgba(20,28,22,.90)'); g1.addColorStop(1,'rgba(10,15,12,.94)');
-  ctx.fillStyle=g1; roundRect(s1X,s1Y,s1W,s1H,12); ctx.fill();
-  // brilho interno dourado sutil
-  ctx.fillStyle='rgba(242,193,78,.07)'; roundRect(s1X,s1Y,s1W,s1H,12); ctx.fill();
+  drawCard(s1X, s1Y, s1W, s1H, UI_CARD.gold, 10);   // card dourado = slot ativo
   // Borda: dourada fria → vermelha em brasa; pisca quando superaquece
   const hotBorder = gunHeat>0.35 ? heatColor(0.5+((gunHeat-0.35)/0.65)*0.5) : '#f2c14e';
   ctx.save();
@@ -1866,15 +2071,11 @@ function drawSlots(){
   if(IMG.weapons) ctx.drawImage(IMG.weapons, w.spr*SPR,0, SPR,SPR, -26, -26, 52,52);
   ctx.restore();
   // Nome pequeno na base do slot
-  ctx.fillStyle='rgba(255,255,255,.75)'; ctx.font='bold 9px system-ui';
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(w.nome.toUpperCase(), s1X+s1W/2, s1Y+s1H-10);
+  drawBmpText(w.nome, s1X+s1W/2, s1Y+s1H-10, 9, {color:'rgba(255,255,255,.75)', align:'center'});
 
   // ── Slot 2: medkit ──
   const canHeal = medkits>0 && player.hp<100;
-  const g2=ctx.createLinearGradient(s2X,s2Y,s2X,s2Y+s2H);
-  g2.addColorStop(0,'rgba(16,24,19,.86)'); g2.addColorStop(1,'rgba(9,14,11,.92)');
-  ctx.fillStyle=g2; roundRect(s2X,s2Y,s2W,s2H,11); ctx.fill();
+  drawCard(s2X, s2Y, s2W, s2H, UI_CARD.gray, 10);
   // Pulso verde quando dá pra curar
   ctx.strokeStyle = canHeal
     ? 'rgba(143,209,50,'+(0.45+0.35*Math.sin(T*4)).toFixed(3)+')'
@@ -1888,11 +2089,10 @@ function drawSlots(){
   if(IMG.tiles) ctx.drawImage(IMG.tiles, 6*16, 12*16, 16, 16, s2X+s2W/2-17, s2Y+s2H/2-19, 34,34);
   ctx.restore();
   // Contador (badge no canto)
-  ctx.fillStyle = medkits>0 ? '#8fd132' : 'rgba(255,255,255,.25)';
+  ctx.fillStyle = medkits>0 ? '#47324b' : 'rgba(71,50,75,.45)';
   roundRect(s2X+s2W-25, s2Y+s2H-23, 19, 17, 6); ctx.fill();
-  ctx.fillStyle = medkits>0 ? '#12240a' : 'rgba(0,0,0,.5)';
-  ctx.font='bold 11px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('x'+medkits, s2X+s2W-15.5, s2Y+s2H-14);
+  drawBmpText('X'+medkits, s2X+s2W-15.5, s2Y+s2H-14, 10,
+    {color: medkits>0 ? '#fff' : 'rgba(255,255,255,.35)', align:'center'});
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
@@ -1916,6 +2116,7 @@ function start(){
   const s=findSpawn(), sv=collInfo(coll[s]);
   player.x=(s%COLS)*MTILE+MTILE/2; player.y=((s/COLS)|0)*MTILE+MTILE/2;
   player.L = (sv && sv.levels) ? sv.levels[0] : 0;
+  spawnEnemies();
   cam.x=clamp(player.x-(VW/VIEW_SCALE)/2,0,Math.max(0,WORLD_W-VW/VIEW_SCALE));
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE));
   overlay.classList.add('hidden');
@@ -1942,6 +2143,7 @@ window.__spawnChest=(c,r,items,v)=>{ chests.push({c,r,v:CHEST_TILES[v]?v:1,
   items:(items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[]}); return chests.length; };
 window.__chests=()=>chests.map(b=>({c:b.c,r:b.r,st:b.st,dentro:b.items.length,voando:b.loot.length}));
 window.__mouse=(down)=>{ mouse.down=down; };
+window.__enemies=()=>enemies.map(e=>({c:Math.floor(e.x/MTILE), r:Math.floor(e.y/MTILE), L:e.L, hp:e.hp, st:e.st}));
 window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
 
 //======================= BOOT =======================
