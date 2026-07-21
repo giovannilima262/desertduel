@@ -431,12 +431,8 @@ function step(dt){
     p.vy += (0 - p.vy)*Math.min(1, dt*5);
   }
   dmgPops = dmgPops.filter(p => p.t < p.dur);
-  // Caveira de morte: sobe e desacelera até quase parar (flutua)
-  for(const p of deathPops){
-    p.t += dt; p.y += p.vy*dt;
-    p.vy += (0 - p.vy)*Math.min(1, dt*1.6);
-  }
-  deathPops = deathPops.filter(p => p.t < p.dur);
+  // Caveira de abate: sobe do corpo e depois voa até o contador de ABATES
+  updateDeathPops(dt);
   // Pegadas no chão — spawn a cada 12px percorridos
   if(player.moving){
     const s = SPEED*dt;
@@ -561,7 +557,7 @@ function enemyHitSound(){
   o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.08);
 }
 function enemyDieSound(){
-  // tom descendo (desinflando) + ruído de baque
+  // tom descendo (desinflando) + ruído de baque + thump grave (peso extra no impacto)
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='triangle';
@@ -576,6 +572,27 @@ function enemyDieSound(){
   const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(500,t);
   src.connect(lp); lp.connect(ng); ng.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
+  // Thump grave — dá peso ao golpe fatal (mesma ideia do "sub punch" do tiro)
+  const sub=audioCtx.createOscillator(); sub.type='sine';
+  sub.frequency.setValueAtTime(115,t); sub.frequency.exponentialRampToValueAtTime(28,t+0.16);
+  const subg=audioCtx.createGain(); subg.gain.setValueAtTime(0.16,t); subg.gain.exponentialRampToValueAtTime(0.001,t+0.16);
+  sub.connect(subg); subg.connect(audioCtx.destination); sub.start(t); sub.stop(t+0.16);
+}
+function killCollectSound(){
+  // "Ding" de abate confirmado: arpejo curto e brilhante + brilho agudo — toca quando a caveira chega no contador
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  [[880,0],[1180,0.045],[1568,0.09]].forEach(([f,d])=>{
+    const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
+    const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
+    g.gain.exponentialRampToValueAtTime(0.11,t+d+0.015); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.16);
+    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.18);
+  });
+  const o2=audioCtx.createOscillator(); o2.type='sine';
+  o2.frequency.setValueAtTime(2400,t+0.02); o2.frequency.exponentialRampToValueAtTime(3200,t+0.12);
+  const g2=audioCtx.createGain(); g2.gain.setValueAtTime(0.0001,t+0.02);
+  g2.gain.exponentialRampToValueAtTime(0.035,t+0.03); g2.gain.exponentialRampToValueAtTime(0.001,t+0.2);
+  o2.connect(g2); g2.connect(audioCtx.destination); o2.start(t+0.02); o2.stop(t+0.22);
 }
 function scatterChestLoot(b){
   const bx = b.c*MTILE+MTILE/2, by = b.r*MTILE+MTILE/2;
@@ -732,29 +749,45 @@ function spawnEnemies(){
   }
   enemies.push({ x:sc*MTILE+MTILE/2, y:er*MTILE+MTILE/2, L:eL,
     hp:100, maxHp:100, st:'alive', flashT:0 });
-  dmgPops = []; deathPops = [];
+  dmgPops = []; deathPops = []; killPulseT = 999; killBurstT = 999;
 }
 function damageEnemy(e, dmg, hx, hy){
   e.hp -= dmg; e.flashT = 0.12;
   const kill = e.hp <= 0;
   spawnDmgPop(hx ?? e.x, (hy ?? e.y-6) - 6, dmg, kill);
-  if(kill){ e.hp = 0; e.st='dead'; kills++; enemyDieSound(); spawnDeathPop(e.x, e.y-6); }
-  else enemyHitSound();
+  if(kill){
+    e.hp = 0; e.st='dead'; kills++;
+    enemyDieSound(); killCollectSound();
+    spawnDeathPop(e.x, e.y-6);
+    shakePhase = Math.max(shakePhase, 0.4);
+    killPulseT = 0; killBurstT = 0;
+  } else enemyHitSound();
 }
 // ── Caveira saindo do corpo ao morrer: sobe, balança e some (ícone da folha interface) ──
-let deathPops = [];   // {x,y,vy,t,dur,sway}
+// O abate soma na hora e o chip de ABATES pulsa/brilha (killPulseT/killBurstT), sem a
+// caveira precisar viajar até lá — só o "pop" no corpo mesmo.
+const DEATH_RISE_DUR = 1.1;
+let deathPops = [];        // {wx,wy,t,sway}
+let killPulseT = 999;      // tempo desde o abate (999 = parado) — dá o bounce no chip
+let killBurstT = 999;      // brilho/anel expandindo no chip
 function spawnDeathPop(x, y){
-  deathPops.push({ x, y, vy:-16, t:0, dur:1.5, sway:Math.random()*6.28 });
+  deathPops.push({ wx:x, wy:y, t:0, sway:Math.random()*6.28 });
 }
-function drawDeathPops(){
+function updateDeathPops(dt){
+  for(const p of deathPops) p.t += dt;
+  deathPops = deathPops.filter(p => p.t < DEATH_RISE_DUR);
+  killPulseT += dt; killBurstT += dt;
+}
+// Sobe do corpo com pop de escala, balança e desvanece (mundo, segue a câmera)
+function drawDeathPopsWorld(){
   if(!IMG.interface) return;
   for(const p of deathPops){
-    const k = p.t/p.dur;
-    const sc = k<0.18 ? 0.3+(k/0.18)*1.05 : 1.35-Math.min(1,(k-0.18)/0.3)*0.35;  // pop com overshoot
+    const k = p.t/DEATH_RISE_DUR;
+    const sc = k<0.18 ? 0.3+(k/0.18)*1.05 : 1.35-Math.min(1,(k-0.18)/0.3)*0.35;
     const ds = 20*sc;
-    const sx = p.x + Math.sin(p.t*4+p.sway)*4;
+    const sx = p.wx + Math.sin(p.t*4+p.sway)*4, sy = p.wy - 16*Math.min(1,k/0.3);
     ctx.save();
-    ctx.translate(sx, p.y);
+    ctx.translate(sx, sy);
     ctx.globalAlpha = k>0.55 ? Math.max(0, 1-(k-0.55)/0.45) : 1;
     ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, -ds/2, -ds/2, ds, ds);
     ctx.restore();
@@ -1528,9 +1561,9 @@ function draw(){
 	    ctx.lineTo(h.x - Math.cos(h.ang)*h.len*0.6, h.y - Math.sin(h.ang)*h.len*0.6);
 	    ctx.stroke();
   }
-  // 3e) Números de dano + caveira de morte — por cima de tudo no mundo
+  // 3e) Números de dano + caveira subindo do corpo — por cima de tudo no mundo
   drawDmgPops();
-  drawDeathPops();
+  drawDeathPopsWorld();
   // ── Aura verde de cura ──
   if(healAura > 0){
     const t = performance.now()/1000;
@@ -1706,13 +1739,28 @@ function drawBars(){
     ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
   }
   // ═══ Chip de abates (topo esquerdo, compacto): caveira da folha + número ═══
+  // Reage ao impacto da caveira que chega voando: brilho expandindo + bounce de escala
   const kW = 60 + bmpTextW(''+kills, 19), kH=38, kX=20, kY=18;
+  const kcx=kX+kW/2, kcy=kY+kH/2;
+  const kpDur=0.4, kp = killPulseT<kpDur ? Math.sin((killPulseT/kpDur)*Math.PI) : 0;
+  const kbDur=0.5, kb = killBurstT<kbDur ? 1-killBurstT/kbDur : 0;
+  if(kb>0){
+    ctx.save();
+    ctx.globalAlpha = kb*0.85;
+    ctx.strokeStyle = '#f2c14e'; ctx.lineWidth = 2+kb*2;
+    ctx.beginPath(); ctx.arc(kcx, kcy, 18+(1-kb)*32, 0, 6.28); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.translate(kcx, kcy); ctx.scale(1+kp*0.3, 1+kp*0.3); ctx.translate(-kcx, -kcy);
   drawCard(kX, kY, kW, kH, UI_CARD.gray, 10);
+  if(kb>0){ ctx.fillStyle='rgba(242,193,78,'+(kb*0.35).toFixed(3)+')'; ctx.fillRect(kX, kY, kW, kH); }
   if(IMG.interface){
     ctx.imageSmoothingEnabled=false;
     ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, kX+9, kY+kH/2-14, 28, 28);
   }
   drawBmpText(kills, kX+44, kY+kH/2+1, 19, {color:'#fff'});
+  ctx.restore();
 }
 function drawMinimap(){
   const R=64, cx=VW-R-28, cy=R+26;
