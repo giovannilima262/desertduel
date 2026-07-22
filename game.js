@@ -197,7 +197,8 @@ function canStep(fromVal,L,toVal,toOver){
 
 //======================= PLAYER =======================
 const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100, armor:100,
-  heading:-Math.PI/2, headingS:-Math.PI/2 };   // direção de MOVIMENTO (alvo + suavizada) — bússola/minimapa
+  heading:-Math.PI/2, headingS:-Math.PI/2,   // direção de MOVIMENTO (alvo + suavizada) — bússola/minimapa
+  facaCooldown:0, facaSwingT:0, facaSwingAng:0 };   // faca automática (ver updateMelee)
 const keys={};
 addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true;
   if(e.key==='2' && state==='playing' && medkits>0 && player.hp<100){   // slot [2]: kit médico
@@ -236,6 +237,10 @@ const WEAPONS = {
               snd:{vol:0.045,body:0.05, f1:2400, f2:500, sub:0.025} },
   escopeta: { nome:'Escopeta', spr:7, auto:false, rate:0.90, pellets:6, spread:0.220, recoil:4.8, shake:1.7,  speed:30, flash:1.4,
               snd:{vol:0.14, body:0.20, f1:1100, f2:120, sub:0.12} },
+  // ── Arma branca PASSIVA (golpe automático, ver updateMelee): não entra no ciclo
+  // de troca/disparo normal — `rate` aqui é o cooldown entre golpes.
+  faca:     { nome:'Faca', spr:8, dmg:40, range:MTILE*1.35, rate:5.0,
+              snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
 };
 let gun = 'pistola';        // arma atual do player
 let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
@@ -262,6 +267,11 @@ let zoneParts = [];                          // partículas de areia/brasa na te
 let zoneBanner = null;                       // anúncio central: {text,sub,color,t,dur}
 let zoneHitFlash = 0;                        // flash vermelho ao tomar dano da zona
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
+// ── Faca automática: golpe passivo corpo-a-corpo, sem clique/decisão de IA — ver
+// updateMelee(). `meleeWeapon` existe à parte da arma equipada; trocar pro machado
+// no futuro é só apontar isto pra outra entrada de WEAPONS.
+let meleeWeapon = 'faca';
+const MELEE_SWING_DUR = 0.32;   // duração visual do golpe (sprite varrendo o arco)
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0, flashMx = 0, flashMy = 0;  // muzzle flash (posição do cano no tiro)
 
@@ -364,6 +374,8 @@ function step(dt){
     e.muzzleFlashT = Math.max(0, (e.muzzleFlashT||0) - dt);
     if(e.st==='dead'){ e.deathT = (e.deathT||0) + dt; continue; }   // corpo some depois de CORPSE_LIFETIME
     if(e.st!=='alive') continue;                       // corpo morto não pensa nem colide
+    // Faca automática: independe da IA/FSM — dispara sozinha por proximidade.
+    updateMelee(e, dt, hostileList(e));
     // Recarga do escudo — igual ao do player: 5s sem tomar dano, depois regenera 10/s
     if(e.armor < e.maxArmor){
       e.shieldRechargeTimer += dt;
@@ -494,6 +506,8 @@ function step(dt){
   }
   if(!mouse.down) fireLatch = false;
   flashT = Math.max(0, flashT - dt);
+  // ── Faca automática: independe do gatilho/gun — dispara sozinha por proximidade ──
+  if(player.hp>0) updateMelee(player, dt, hostileList(player));
   // ── Resfriamento + vapor do cano ──
   gunHeat = Math.max(0, gunHeat - dt*(gunOverheat ? 0.30 : 0.20));
   if(gunOverheat && gunHeat <= 0.30) gunOverheat = false;    // pronta de novo
@@ -780,6 +794,29 @@ function shoot(){
   const aimDist = Math.max(MTILE*2, Math.hypot(mouse.wx-mx, mouse.wy-my));
   fireBullet(player.x, player.y-6, player.L, gun, angle, aimDist, 'player');
 }
+// ── Faca automática: golpe passivo corpo-a-corpo — roda TODO frame pra QUALQUER
+// combatente vivo (player e cada bot, mesma função) e só "aparece" (anima + causa
+// dano) se, com o cooldown zerado, achar um hostil dentro do alcance. Sem alvo por
+// perto ela fica escondida — não é sacada/segurada como as armas de fogo.
+function updateMelee(ent, dt, hostiles){
+  ent.facaCooldown = Math.max(0, ent.facaCooldown - dt);
+  ent.facaSwingT = Math.max(0, ent.facaSwingT - dt);
+  if(ent.facaCooldown > 0) return;
+  const mw = WEAPONS[meleeWeapon];
+  let target = null, bestD = mw.range;
+  for(const h of hostiles){
+    const d = Math.hypot(h.x-ent.x, (h.y-6)-(ent.y-6));
+    if(d <= bestD){ bestD = d; target = h; }
+  }
+  if(!target) return;
+  ent.facaSwingAng = Math.atan2((target.y-6)-(ent.y-6), target.x-ent.x);
+  ent.facaSwingT = MELEE_SWING_DUR;
+  ent.facaCooldown = mw.rate;
+  if(ent===player) shakePhase = Math.max(shakePhase, 0.4);
+  gunSound(mw.snd, ent===player ? 1 : gunshotAtten(ent.x, ent.y));
+  if(target===player) damagePlayer(mw.dmg, target.x, target.y-6);
+  else damageEnemy(target, mw.dmg, target.x, target.y-6, ent===player ? 'player' : ent);
+}
 
 // Raycast: step cell-by-cell from (x1,y1) to (x2,y2), tracking level changes
 // through stairs. Returns the world hit point and the bullet's level at impact.
@@ -989,6 +1026,7 @@ function spawnEnemies(){
       st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
       // ── combate/visual ──
       gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
+      facaCooldown:0, facaSwingT:0, facaSwingAng:0,
       animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0,
       // ── IA ──
       fsm:'EXPLORE', decisionTimer:Math.random()*0.3, target:null, lastKnownTargetPos:null,
@@ -1180,7 +1218,7 @@ function followPath(e, dt){
 // ── Percepção: todo mundo (player + outros bots) é só "hostil" — sem caso especial ──
 function hostileList(self){
   const list=[];
-  if(player.hp>0) list.push(player);
+  if(self!==player && player.hp>0) list.push(player);   // self pode ser o próprio player (ver updateMelee)
   for(const e of enemies) if(e!==self && e.st==='alive') list.push(e);
   return list;
 }
@@ -1696,6 +1734,41 @@ function segRectHit(x1,y1,x2,y2,rc){
   }
   return { t:t0, x:x1+dx*t0, y:y1+dy*t0 };
 }
+// Golpe da faca automática: só existe durante MELEE_SWING_DUR — a lâmina varre um
+// arco em torno do alvo (único frame estático, sem folha de animação própria, então
+// o "corte" é o sprite girando/deslocando rápido no arco, não uma troca de frame).
+function drawMeleeSwing(x, y, ang, swingT){
+  if(swingT<=0 || !IMG.weapons) return;
+  const mw = WEAPONS[meleeWeapon];
+  const k = 1 - swingT/MELEE_SWING_DUR;           // 0→1 ao longo do golpe
+  // Envelope de escala (cresce, segura, encolhe) e progresso do arco são
+  // curvas SEPARADAS — o arco sempre termina de varrer (aos 60% do tempo) antes
+  // da escala começar a encolher (75%), senão o corte parecia "cortado" na
+  // metade mesmo sem nada cancelando de verdade.
+  const scaleEnv = k<0.2 ? k/0.2 : k>0.75 ? Math.max(0,(1-k)/0.25) : 1;
+  const sweepK = Math.min(1, k/0.6);
+  const dist = SPR*0.55;
+  const a0 = ang-0.7, a1 = ang-0.7+1.4*sweepK;     // varre de -0.7 a +0.7 rad em torno do alvo
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scaleEnv, scaleEnv);
+  // Rastro branco brilhante do arco — o que faz o corte realmente "aparecer",
+  // não só o ícone da faca (que sozinho é pequeno e passa despercebido).
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = 3.2;
+  ctx.beginPath(); ctx.arc(0, 0, dist, a0, a1); ctx.stroke();
+  ctx.restore();
+  // Lâmina na ponta do arco, maior que o normal pra ficar bem visível
+  ctx.save();
+  ctx.translate(Math.cos(a1)*dist, Math.sin(a1)*dist);
+  ctx.rotate(a1 + Math.PI/4);
+  ctx.scale(1.4, 1.4);
+  ctx.drawImage(IMG.weapons, mw.spr*SPR, 0, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+  ctx.restore();
+  ctx.restore();
+}
 function drawEnemy(e){
   const frame = e.st==='dead' ? ENEMY_DEAD : e.frame;
   ctx.fillStyle='rgba(0,0,0,0.28)';
@@ -1707,6 +1780,8 @@ function drawEnemy(e){
   ctx.restore();
   if(e.st==='alive'){
     drawBotWeapon(e);   // arma que o bot carrega — sempre visível, começa com pistola
+    // faca automática: desenhada num passe FINAL à parte (ver draw()), sempre por
+    // cima de todo mundo — aqui cobriria/seria coberta dependendo da ordem do loop.
     // barra de vida da folha interface acima da cabeça (trilho branco + laranja)
     const bw=MTILE*1.5, bh=bw*14/64;
     drawUIBar(e.x-bw/2, e.y-SPR+4, bw, bh, 'orange', e.hp/e.maxHp);
@@ -2457,6 +2532,12 @@ function draw(){
 	    if(!playerHidden) revealBridgeBlocksFor(player.x, player.y-6, player.L);
 	    for(const e of visibleAlive) revealBridgeBlocksFor(e.x, e.y-6, e.L);
 	    for(const e of visibleDead)  revealBridgeBlocksFor(e.x, e.y-6, e.L);
+
+	    // ── Golpe de faca: passe FINAL, por cima de todo mundo (player e bots) — se
+	    // desenhasse junto com cada sprite, quem fosse desenhado DEPOIS (ordem de loop)
+	    // cobria o corte de quem golpeou antes.
+	    if(!playerHidden && player.hp>0) drawMeleeSwing(player.x, player.y-6, player.facaSwingAng, player.facaSwingT);
+	    for(const e of visibleAlive) drawMeleeSwing(e.x, e.y-6, e.facaSwingAng, e.facaSwingT);
 	  }
 
 
@@ -3047,6 +3128,7 @@ function drawSlots(){
   const s1W=116, s1H=88, s2W=94, s2H=74, gap=6;
   const s2X=VW-M-s2W, s2Y=VH-18-s2H;
   const s1X=s2X-gap-s1W, s1Y=VH-18-s1H;
+  const s0W=64, s0H=s1H, s0X=s1X-gap-s0W, s0Y=s1Y;   // slot extra: faca automática
   // ═══ Cartão da arma: linha 1 = nome · modo · temperatura | linha 2 = termômetro cheio ═══
   const iH=58, iW=s1W+gap+s2W, iX=s1X, iY=s1Y-8-iH;
   drawCard(iX, iY, iW, iH, UI_CARD.gray, 10);
@@ -3141,6 +3223,25 @@ function drawSlots(){
   roundRect(s2X+s2W-28, s2Y+s2H-26, 22, 19, 6); ctx.fill();
   drawBmpText('X'+medkits, s2X+s2W-17, s2Y+s2H-16.5, 11,
     {color: medkits>0 ? '#fff' : 'rgba(255,255,255,.35)', align:'center'});
+
+  // ── Slot extra: faca automática — passiva (sem tecla, golpeia sozinha por
+  // proximidade), por isso o card fica cinza (não "ativo" como o slot 1) com uma
+  // tag AUTO e uma barra de cooldown carregando embaixo.
+  const mw = WEAPONS[meleeWeapon];
+  const facaPct = 1 - player.facaCooldown/mw.rate;   // 0 = acabou de golpear, 1 = pronta
+  drawCard(s0X, s0Y, s0W, s0H, UI_CARD.gray, 10);
+  ctx.strokeStyle = facaPct>=1 ? 'rgba(242,193,78,.55)' : 'rgba(255,255,255,.18)';
+  ctx.lineWidth = facaPct>=1 ? 1.8 : 1.2;
+  ctx.strokeRect(s0X, s0Y, s0W, s0H);
+  ctx.save();
+  ctx.imageSmoothingEnabled=false;
+  if(facaPct<1) ctx.globalAlpha=0.5;
+  if(IMG.weapons) ctx.drawImage(IMG.weapons, mw.spr*SPR, 0, SPR, SPR, s0X+s0W/2-20, s0Y+s0H/2-26, 40, 40);
+  ctx.restore();
+  const atW=34;
+  ctx.fillStyle='#47324b'; roundRect(s0X+s0W/2-atW/2, s0Y+7, atW, 14, 4); ctx.fill();
+  drawBmpText('AUTO', s0X+s0W/2, s0Y+14, 9, {color:'#f2c14e', align:'center'});
+  drawUIBar(s0X+7, s0Y+s0H-15, s0W-14, 8, 'blue', facaPct);
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
@@ -3162,7 +3263,7 @@ function start(){
   hpGhost=100; armorGhost=100;
   shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
-  healAura=0;
+  healAura=0; player.facaCooldown=0; player.facaSwingT=0;
   spawnEnemies();   // também posiciona o player — sorteia entre o mesmo pool de spawns dos bots
   cam.x=clamp(player.x-(VW/VIEW_SCALE)/2,0,Math.max(0,WORLD_W-VW/VIEW_SCALE));
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE));
