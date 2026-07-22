@@ -75,6 +75,11 @@ function loadLevel(){
   gunItems = (MAP.guns||[]).filter(g=>WEAPONS[g.t]).map(g=>({c:g.c, r:g.r, t:g.t, bob:Math.random()*6.28}));
   chests = (MAP.chests||[]).map(b=>({ c:b.c, r:b.r, v:CHEST_TILES[b.v]?b.v:1,
     items:(b.items||[]).filter(t=>WEAPONS[t]), st:'closed', t:0, loot:[] }));
+  critterSpawners = (MAP.critterSpawns||[]).map(s=>({
+    c:s.c, r:s.r, L:s.L|0, qty:Math.max(1,s.qty|0)||3, maxAlive:Math.max(1,s.maxAlive|0)||6,
+    timer:0, everSpawned:false, hasKillSinceWave:false }));
+  critters = [];
+  critterSplashes = [];
   // minimapa: 1px por célula — só terreno sólido (sem sombra nem opacidade)
   miniMap = document.createElement('canvas'); miniMap.width=COLS; miniMap.height=ROWS;
   const mmc = miniMap.getContext('2d'); mmc.imageSmoothingEnabled = true;
@@ -411,6 +416,31 @@ function step(dt){
     e.animT += dt;
     e.frame = e.moving ? 1+(Math.floor(e.animT*8)%2) : 0;
   }
+  // ── Bicho: leva (spawner) + andança lenta própria — some da lista já morto ──
+  updateCritterSpawners(dt);
+  for(const cr of critters) if(cr.st!=='dead') updateCritter(cr, dt);
+  if(critters.some(cr=>cr.st==='dead')) critters = critters.filter(cr=>cr.st!=='dead');
+  // Empurrão entre bichos — não se atravessam entre si (não mexe com player/bot).
+  // Cada eixo só aceita o empurrão se o destino continuar num chão válido pro bicho.
+  {
+    const min = SPR*0.55;
+    for(let i=0;i<critters.length;i++){
+      const a = critters[i];
+      for(let j=i+1;j<critters.length;j++){
+        const b = critters[j];
+        const dx=a.x-b.x, dy=a.y-b.y, d=Math.hypot(dx,dy);
+        if(d>0.001 && d<min){
+          const push=(min-d)/2, nx=dx/d, ny=dy/d;
+          const ax=a.x+nx*push, ay=a.y+ny*push, bx=b.x-nx*push, by=b.y-ny*push;
+          if(critterCanStep(collAt(Math.floor(ax/MTILE), Math.floor(a.y/MTILE)), a.L)) a.x=ax;
+          if(critterCanStep(collAt(Math.floor(a.x/MTILE), Math.floor(ay/MTILE)), a.L)) a.y=ay;
+          if(critterCanStep(collAt(Math.floor(bx/MTILE), Math.floor(b.y/MTILE)), b.L)) b.x=bx;
+          if(critterCanStep(collAt(Math.floor(b.x/MTILE), Math.floor(by/MTILE)), b.L)) b.y=by;
+        }
+      }
+    }
+  }
+  updateCritterSplashes(dt);
   // Empurrão entre corpos — player e bots agora se movem, então o afastamento é
   // simétrico (cada um cede metade), diferente de quando só o player se mexia.
   // Player morto sai da lista (corpo não empurra ninguém, igual bot morto).
@@ -667,6 +697,15 @@ function overheatSound(){
   const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
   o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
 }
+const CRITTER_DIE_SFX = new Audio('assets/sfx/hurt-c.ogg');
+function critterSquishSound(atten=1){
+  // arquivo gravado (hurt-c) em vez de síntese — clona pra permitir sobrepor
+  // se mais de um bicho morrer no mesmo instante.
+  if(atten<=0) return;
+  const a = CRITTER_DIE_SFX.cloneNode(true);
+  a.volume = Math.min(1, atten/OTHER_GUNSHOT_VOLUME) * 0.1;
+  a.play().catch(()=>{});
+}
 function enemyHitSound(atten=1){
   // thud curto e grave — bala acertou carne
   if(atten<=0) return;
@@ -803,10 +842,15 @@ function updateMelee(ent, dt, hostiles){
   ent.facaSwingT = Math.max(0, ent.facaSwingT - dt);
   if(ent.facaCooldown > 0) return;
   const mw = WEAPONS[meleeWeapon];
-  let target = null, bestD = mw.range;
+  let target = null, targetIsCritter = false, bestD = mw.range;
   for(const h of hostiles){
     const d = Math.hypot(h.x-ent.x, (h.y-6)-(ent.y-6));
-    if(d <= bestD){ bestD = d; target = h; }
+    if(d <= bestD){ bestD = d; target = h; targetIsCritter = false; }
+  }
+  for(const cr of critters){                        // faca também mata bicho — mesmo alcance
+    if(cr.st==='dead' || cr.L !== ent.L) continue;
+    const d = Math.hypot(cr.x-ent.x, (cr.y-6)-(ent.y-6));
+    if(d <= bestD){ bestD = d; target = cr; targetIsCritter = true; }
   }
   if(!target) return;
   ent.facaSwingAng = Math.atan2((target.y-6)-(ent.y-6), target.x-ent.x);
@@ -814,7 +858,8 @@ function updateMelee(ent, dt, hostiles){
   ent.facaCooldown = mw.rate;
   if(ent===player) shakePhase = Math.max(shakePhase, 0.4);
   gunSound(mw.snd, ent===player ? 1 : gunshotAtten(ent.x, ent.y));
-  if(target===player) damagePlayer(mw.dmg, target.x, target.y-6);
+  if(targetIsCritter) killCritter(target);
+  else if(target===player) damagePlayer(mw.dmg, target.x, target.y-6);
   else damageEnemy(target, mw.dmg, target.x, target.y-6, ent===player ? 'player' : ent);
 }
 
@@ -888,20 +933,27 @@ function bulletStep(b, dt){
   const hit = raycast(b.x, b.y, nextX, nextY, b.level);
   // Alvo no caminho? (segmento do frame vs sprite inteiro — sem tunneling)
   // Testa player (se a bala não for do player) e inimigos (se for do player, ou bot-vs-bot ligado)
-  let bestT=Infinity, bestPt=null, hitPlayer=false, hitEnemy=null;
+  let bestT=Infinity, bestPt=null, hitPlayer=false, hitEnemy=null, hitCritter=null;
   if(b.owner !== 'player' && player.hp > 0 && player.L === b.level){
     const h = segRectHit(b.x, b.y, hit.x, hit.y, bodyRect(player.x, player.y));
-    if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=true; hitEnemy=null; }
+    if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=true; hitEnemy=null; hitCritter=null; }
   }
   if(b.owner === 'player' || BOT_VS_BOT){
     for(const e of enemies){
       if(e === b.owner || e.st !== 'alive' || e.L !== b.level) continue;
       const h = segRectHit(b.x, b.y, hit.x, hit.y, bodyRect(e.x, e.y));
-      if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=false; hitEnemy=e; }
+      if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=false; hitEnemy=e; hitCritter=null; }
     }
+  }
+  // Bicho: qualquer bala (de qualquer dono) mata — vida efetiva 1
+  for(const cr of critters){
+    if(cr.st==='dead' || cr.L !== b.level) continue;
+    const h = segRectHit(b.x, b.y, hit.x, hit.y, bodyRect(cr.x, cr.y));
+    if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=false; hitEnemy=null; hitCritter=cr; }
   }
   if(bestPt){
     if(hitPlayer) damagePlayer(GUN_DMG[b.w]||10, bestPt.x, bestPt.y);
+    else if(hitCritter) killCritter(hitCritter);
     else damageEnemy(hitEnemy, GUN_DMG[b.w]||10, bestPt.x, bestPt.y, b.owner);
     b.x=bestPt.x; b.y=bestPt.y; b.tx=b.x; b.ty=b.y; b.life=0;   // faísca no ponto do impacto
     return;
@@ -1009,6 +1061,16 @@ const WEAPON_TIER = { pistola:1, escopeta:2, smg:2, magnum:3, carabina:3, uzi:3,
 const weaponScore = id => { const w=WEAPONS[id]; return w.pellets*(GUN_DMG[id]||10)/w.rate; };
 const TOTAL_COMBATANTS = 50;     // player + bots
 let enemies = [];
+// ── Bicho fraco (spawner configurável no editor): nasce, cresce e fica andando
+// devagar SÓ no próprio nível — nunca usa escada nem ponte. Qualquer bala ou golpe
+// de faca mata (hp efetivo 1). Cada spawner solta uma leva nova só depois que pelo
+// menos um da leva anterior morreu (se ainda não tiver matado nenhum, espera).
+let critterSpawners = [];   // do mapa: {c,r,L,qty,maxAlive} + timer/estado de leva
+let critters = [];          // instâncias vivas: {x,y,L,st,animT,spawner,...}
+let critterSplashes = [];   // splash de gosma no instante da morte: {x,y,drops,t,dur}
+const CRITTER_SPAWN_ANIM_DUR = 0.6;   // segundos "brotando" antes de poder andar
+const CRITTER_SPEED = SPEED * 0.13;   // bem devagar
+const CRITTER_WAVE_CHECK = 8;         // segundos entre checagens de leva nova
 function spawnEnemies(){
   enemies = [];
   const spawnIdx = collectSpawnPoints(TOTAL_COMBATANTS);
@@ -1038,6 +1100,115 @@ function spawnEnemies(){
   dmgPops = []; deathPops = []; shieldBreaks = []; killPulseT = 999; killBurstT = 999;
   bullets = []; aiPathBudget = 0; aiUrgentPathBudget = 0;
 }
+
+// ── Bicho: colisão PRÓPRIA (sem escada, sem ponte — só piso/spawn do MESMO nível) ──
+function critterCanStep(toVal, L){
+  const ci = collInfo(toVal);
+  if(!ci) return false;                                  // vazio/vazio = sem chão, não anda
+  if(ci.kind==='block' || ci.kind==='escada') return false;   // parede E escada bloqueiam
+  if(ci.kind==='piso') return ci.level===L;
+  if(ci.kind==='spawn') return ci.levels[0]===L;
+  return false;
+}
+function critterAxis(cr, nx, ny, horiz){
+  const cc={c:Math.floor(cr.x/MTILE), r:Math.floor(cr.y/MTILE)};
+  const lead = horiz ? {c:Math.floor((nx+Math.sign(nx-cr.x)*PLAYER_R)/MTILE), r:cc.r}
+                     : {c:cc.c, r:Math.floor((ny+Math.sign(ny-cr.y)*PLAYER_R)/MTILE)};
+  if(!critterCanStep(collAt(lead.c,lead.r), cr.L)) return false;
+  if(horiz) cr.x=nx; else cr.y=ny;
+  return true;
+}
+function spawnCritter(sp){
+  critters.push({
+    x: sp.c*MTILE+MTILE/2 + (Math.random()*2-1)*MTILE*0.25,
+    y: sp.r*MTILE+MTILE/2 + (Math.random()*2-1)*MTILE*0.25,
+    L: sp.L, spawner: sp, st:'spawning', animT:0, flip:false,
+    vx:0, vy:0, wanderT:0,
+  });
+}
+// Solta uma leva nova só se: (a) ainda tem vaga (abaixo do máx vivo DESSE spawner) e
+// (b) é a primeira leva OU já morreu pelo menos um da leva anterior.
+function updateCritterSpawners(dt){
+  for(const sp of critterSpawners){
+    sp.timer -= dt;
+    if(sp.timer > 0) continue;
+    sp.timer = CRITTER_WAVE_CHECK;
+    if(sp.everSpawned && !sp.hasKillSinceWave) continue;
+    const aliveNow = critters.reduce((n,cr)=>n+(cr.spawner===sp && cr.st!=='dead' ? 1 : 0), 0);
+    const room = sp.maxAlive - aliveNow;
+    if(room <= 0) continue;
+    const n = Math.min(sp.qty, room);
+    for(let i=0;i<n;i++) spawnCritter(sp);
+    sp.everSpawned = true;
+    sp.hasKillSinceWave = false;
+  }
+}
+function updateCritter(cr, dt){
+  cr.animT += dt;
+  if(cr.st==='spawning'){
+    if(cr.animT >= CRITTER_SPAWN_ANIM_DUR){ cr.st='alive'; cr.animT=0; }
+    return;
+  }
+  cr.wanderT -= dt;
+  if(cr.wanderT <= 0){
+    // Anda só paralelo aos eixos (igual a um passo de grade) — nunca na diagonal.
+    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    const d = dirs[(Math.random()*4)|0];
+    cr.vx = d[0]; cr.vy = d[1];
+    cr.wanderT = 1.2 + Math.random()*2.2;
+  }
+  const s = CRITTER_SPEED*dt;
+  const okX = critterAxis(cr, cr.x+cr.vx*s, cr.y, true);
+  const okY = critterAxis(cr, cr.x, cr.y+cr.vy*s, false);
+  if(!okX && !okY) cr.wanderT = 0;         // bateu em algo — escolhe outra direção já no próximo frame
+  if(cr.vx) cr.flip = cr.vx<0;
+}
+// ── Splash de gosma no instante da morte: gotas voando (com "gravidade") a partir
+// do ponto de impacto, some rápido — nada de rastro persistente, só o momento. ──
+const SPLASH_RING_DELAY = 0.13, SPLASH_RING_DUR = 0.55, SPLASH_RINGS = 2;
+function spawnCritterSplash(x, y){
+  critterSplashes.push({x, y, t:0, dur:(SPLASH_RINGS-1)*SPLASH_RING_DELAY + SPLASH_RING_DUR});
+}
+function updateCritterSplashes(dt){
+  for(const s of critterSplashes) s.t += dt;
+  if(critterSplashes.some(s=>s.t>=s.dur)) critterSplashes = critterSplashes.filter(s=>s.t<s.dur);
+}
+function killCritter(cr){
+  if(cr.st==='dead') return;
+  cr.st = 'dead';
+  if(cr.spawner) cr.spawner.hasKillSinceWave = true;
+  spawnCritterSplash(cr.x, cr.y);
+  critterSquishSound(gunshotAtten(cr.x, cr.y));
+}
+// enemies_packed.png é um PNG indexado — reduzir a escala direto dele faz o Chrome
+// vazar branco opaco nas bordas transparentes. Decodifica cada frame 1x num canvas
+// (RGBA de verdade) e escala A PARTIR DELE — sem esse passo o halo aparece.
+const _critterFrameCache = {};
+function critterFrameImg(frame){
+  let c = _critterFrameCache[frame];
+  if(!c){
+    c = document.createElement('canvas'); c.width=SPR; c.height=SPR;
+    const g = c.getContext('2d'); g.imageSmoothingEnabled=false;
+    g.drawImage(IMG.enemies, frame*SPR, 0, SPR, SPR, 0, 0, SPR, SPR);
+    _critterFrameCache[frame] = c;
+  }
+  return c;
+}
+function drawCritter(cr){
+  if(!IMG.enemies) return;
+  const spawning = cr.st==='spawning';
+  const frame = spawning ? (2 + Math.floor(cr.animT*6)%2) : (Math.floor(cr.animT*4)%2);
+  ctx.fillStyle='rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(cr.x, cr.y+4, 5, 2, 0, 0, 6.28); ctx.fill();
+  // Cresce ao nascer — escala o DESTINO do drawImage, não a matriz de transformação.
+  const s = spawning ? SPR*Math.min(1, cr.animT/CRITTER_SPAWN_ANIM_DUR) : SPR;
+  ctx.save(); ctx.translate(cr.x, cr.y-4);
+  if(cr.flip) ctx.scale(-1,1);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(critterFrameImg(frame), 0, 0, SPR, SPR, -s/2, -s/2, s, s);
+  ctx.restore();
+}
+
 function damageEnemy(e, dmg, hx, hy, owner){
   e.flashT = 0.12;
   const px = hx ?? e.x, py = (hy ?? e.y-6) - 6;
@@ -2283,6 +2454,22 @@ function draw(){
     ctx.arc(s.x+2, s.y, MTILE*0.08, 0, 6.28);
     ctx.fill();
   }
+  // 1.85) splash de gosma no instante da morte do bicho — 3 anéis crescendo em
+  // sequência (tipo onda). Cresce em ease-out (rápido no início, desacelera) e o
+  // alfa entra e sai suave (sem) — nada de "pop" nem corte brusco no fim.
+  for(const s of critterSplashes){
+    for(let ring=0; ring<SPLASH_RINGS; ring++){
+      const rt = s.t - ring*SPLASH_RING_DELAY;
+      if(rt<=0 || rt>=SPLASH_RING_DUR) continue;
+      const k = rt/SPLASH_RING_DUR;
+      const ease = Math.sin(Math.PI*k);          // 0→1→0 suave (entra e sai fluido)
+      const growK = 1 - (1-k)*(1-k);              // ease-out: cresce rápido, desacelera
+      ctx.save(); ctx.globalAlpha = ease*0.8;
+      ctx.strokeStyle = 'rgba(79,156,134,0.85)'; ctx.lineWidth = 0.7;
+      ctx.beginPath(); ctx.arc(s.x, s.y, growK*MTILE*0.9, 0, 6.28); ctx.stroke();
+      ctx.restore();
+    }
+  }
   // 1.9) baús — sempre atrás do player
   if(IMG.tiles){
     const tNow2 = performance.now()/1000;
@@ -2305,6 +2492,8 @@ function draw(){
     }
     for(const e of enemies) if(e.st!=='dead')  drawEnemy(e);
   }
+  // 1.96) bicho — nasce/anda, sem oclusão própria (é pequeno e raso, sempre visível)
+  if(IMG.enemies) for(const cr of critters) drawCritter(cr);
 
   // 2) player (sombra + mascote 24px, ancorado nos pés)
 	  ctx.fillStyle='rgba(0,0,0,0.28)';
