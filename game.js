@@ -1570,6 +1570,10 @@ function decideBotFSM(e, dt){
 
   if(e.fsm === 'FLEE') return;   // mantém fugindo até recuperar HP, mesmo sem alvo visível
 
+  // Abrindo baú: não abandona no meio — o hostil pode esperar (ou morrer pra zona)
+  // enquanto a carga termina (senão sai do range a cada ciclo de decisão e reseta).
+  if(e.fsm === 'SEEK_LOOT' && chests.some(b=>b.st==='charging' && b.chargedBy===e)) return;
+
   // HP baixo → bicho por perto = prioridade máxima (cura +1 HP), acima de hostil/zona
   if(hpPct <= AI_CRITTER_HUNT_PCT){
     const cr = findNearbyCritter(e);
@@ -1723,8 +1727,19 @@ function updateBotAI(e, dt){
     return;
   }
   if(e.fsm === 'SEEK_LOOT' && e.lootGoal){
-    setBotGoal(e, e.lootGoal.c, e.lootGoal.r);
-    updateBotPathing(e, dt); followPath(e, dt);
+    const lx = e.lootGoal.c*MTILE+MTILE/2, ly = e.lootGoal.r*MTILE+MTILE/2;
+    const d = Math.hypot(e.x-lx, e.y-ly);
+    // Confere se o baú na célula ainda precisa de carga — aberto = já foi, segue
+    // atrás do loot (a arma que saltou) em vez de travar parado no lugar.
+    const chestHere = chests.find(b=>b.c===e.lootGoal.c && b.r===e.lootGoal.r);
+    const stillCharging = chestHere && (chestHere.st==='closed' || chestHere.st==='charging');
+    if(d >= CHEST_RANGE*0.8 || !stillCharging){
+      setBotGoal(e, e.lootGoal.c, e.lootGoal.r);
+      updateBotPathing(e, dt); followPath(e, dt);
+    } else {
+      e.moving = false;   // parado, olhando pro loot — a carga do baú não reseta!
+      e.flip = e.x > lx;  // virado pro baú/arma
+    }
     return;
   }
   // EXPLORE
