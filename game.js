@@ -80,6 +80,7 @@ function loadLevel(){
     timer:0, everSpawned:false, hasKillSinceWave:false }));
   critters = [];
   critterSplashes = [];
+  critterHealPops = [];
   // minimapa: 1px por célula — só terreno sólido (sem sombra nem opacidade)
   miniMap = document.createElement('canvas'); miniMap.width=COLS; miniMap.height=ROWS;
   const mmc = miniMap.getContext('2d'); mmc.imageSmoothingEnabled = true;
@@ -402,7 +403,7 @@ function step(dt){
         e.zoneDmgTimer = (e.zoneDmgTimer||0) + dt;
         if(e.zoneDmgTimer >= ZONE_DMG_TICK){
           e.zoneDmgTimer -= ZONE_DMG_TICK;
-          const dmgZ = zoneNum < 5 ? 1 : 1 + (zoneNum-4);
+          const dmgZ = zoneNum < 5 ? 1 : zoneNum + 2;
           damageEnemy(e, dmgZ, e.x, e.y-6, null);
           if(e.st!=='alive') continue;
         }
@@ -415,6 +416,17 @@ function step(dt){
     botCheckGunPickup(e);
     e.animT += dt;
     e.frame = e.moving ? 1+(Math.floor(e.animT*8)%2) : 0;
+    // Pegadas no chão — mesma regra do player, só que sem o som (evita 49 bots
+    // tocando passo ao mesmo tempo). Bicho não entra aqui, tem o jeito dele.
+    if(e.moving){
+      e.footprintDist = (e.footprintDist||0) + AI_BOT_SPEED*dt;
+      if(e.footprintDist >= MTILE*0.75){
+        e.footprintDist = 0;
+        smoke.push({ x: e.x, y: e.y+2, life: 0.8+Math.random()*0.4 });
+      }
+    } else {
+      e.footprintDist = MTILE*0.75;
+    }
   }
   // ── Bicho: leva (spawner) + andança lenta própria — some da lista já morto ──
   updateCritterSpawners(dt);
@@ -423,7 +435,7 @@ function step(dt){
   // Empurrão entre bichos — não se atravessam entre si (não mexe com player/bot).
   // Cada eixo só aceita o empurrão se o destino continuar num chão válido pro bicho.
   {
-    const min = SPR*0.55;
+    const min = SPR;   // asset cheio do bicho — não é menor que o sprite
     for(let i=0;i<critters.length;i++){
       const a = critters[i];
       for(let j=i+1;j<critters.length;j++){
@@ -441,6 +453,7 @@ function step(dt){
     }
   }
   updateCritterSplashes(dt);
+  updateCritterHealPops(dt);
   // Empurrão entre corpos — player e bots agora se movem, então o afastamento é
   // simétrico (cada um cede metade), diferente de quando só o player se mexia.
   // Player morto sai da lista (corpo não empurra ninguém, igual bot morto).
@@ -858,7 +871,7 @@ function updateMelee(ent, dt, hostiles){
   ent.facaCooldown = mw.rate;
   if(ent===player) shakePhase = Math.max(shakePhase, 0.4);
   gunSound(mw.snd, ent===player ? 1 : gunshotAtten(ent.x, ent.y));
-  if(targetIsCritter) killCritter(target);
+  if(targetIsCritter) killCritter(target, ent===player ? 'player' : ent);
   else if(target===player) damagePlayer(mw.dmg, target.x, target.y-6);
   else damageEnemy(target, mw.dmg, target.x, target.y-6, ent===player ? 'player' : ent);
 }
@@ -953,7 +966,7 @@ function bulletStep(b, dt){
   }
   if(bestPt){
     if(hitPlayer) damagePlayer(GUN_DMG[b.w]||10, bestPt.x, bestPt.y);
-    else if(hitCritter) killCritter(hitCritter);
+    else if(hitCritter) killCritter(hitCritter, b.owner);
     else damageEnemy(hitEnemy, GUN_DMG[b.w]||10, bestPt.x, bestPt.y, b.owner);
     b.x=bestPt.x; b.y=bestPt.y; b.tx=b.x; b.ty=b.y; b.life=0;   // faísca no ponto do impacto
     return;
@@ -1068,6 +1081,7 @@ let enemies = [];
 let critterSpawners = [];   // do mapa: {c,r,L,qty,maxAlive} + timer/estado de leva
 let critters = [];          // instâncias vivas: {x,y,L,st,animT,spawner,...}
 let critterSplashes = [];   // splash de gosma no instante da morte: {x,y,drops,t,dur}
+let critterHealPops = [];   // "+1" verde do bicho morto voando pro player: {fx,fy,tx,ty,t,dur}
 const CRITTER_SPAWN_ANIM_DUR = 0.6;   // segundos "brotando" antes de poder andar
 const CRITTER_SPEED = SPEED * 0.13;   // bem devagar
 const CRITTER_WAVE_CHECK = 8;         // segundos entre checagens de leva nova
@@ -1089,9 +1103,10 @@ function spawnEnemies(){
       // ── combate/visual ──
       gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
       facaCooldown:0, facaSwingT:0, facaSwingAng:0,
-      animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0,
+      animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0, footprintDist:0,
       // ── IA ──
       fsm:'EXPLORE', decisionTimer:Math.random()*0.3, target:null, lastKnownTargetPos:null,
+      critterTarget:null,
       lootGoal:null, lootPriority: Math.random() < 0.3,
       path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
       wanderTarget:null,
@@ -1112,8 +1127,8 @@ function critterCanStep(toVal, L){
 }
 function critterAxis(cr, nx, ny, horiz){
   const cc={c:Math.floor(cr.x/MTILE), r:Math.floor(cr.y/MTILE)};
-  const lead = horiz ? {c:Math.floor((nx+Math.sign(nx-cr.x)*PLAYER_R)/MTILE), r:cc.r}
-                     : {c:cc.c, r:Math.floor((ny+Math.sign(ny-cr.y)*PLAYER_R)/MTILE)};
+  const lead = horiz ? {c:Math.floor((nx+Math.sign(nx-cr.x)*SPR/2)/MTILE), r:cc.r}
+                     : {c:cc.c, r:Math.floor((ny+Math.sign(ny-cr.y)*SPR/2)/MTILE)};
   if(!critterCanStep(collAt(lead.c,lead.r), cr.L)) return false;
   if(horiz) cr.x=nx; else cr.y=ny;
   return true;
@@ -1162,6 +1177,21 @@ function updateCritter(cr, dt){
   const okY = critterAxis(cr, cr.x, cr.y+cr.vy*s, false);
   if(!okX && !okY) cr.wanderT = 0;         // bateu em algo — escolhe outra direção já no próximo frame
   if(cr.vx) cr.flip = cr.vx<0;
+  // Corrige o corpo que sobrou pendurado pra fora do piso — sem isso metade do
+  // asset podia flutuar sobre o vazio (lembra: o colisor é o asset cheio agora).
+  // Empurra o centro de volta pra área válida: a célula do centro É válida (o
+  // movimento sempre foi aceito), então andamos pra cada lado até achar onde a
+  // "casca" (SPR/2) bateria num tile inválido, e paramos logo antes.
+  const R=SPR/2, cc=Math.floor(cr.x/MTILE), crr=Math.floor(cr.y/MTILE);
+  let lx=cc, rx=cc;
+  while(lx>0 && critterCanStep(collAt(lx-1,crr),cr.L)) lx--;
+  while(rx<COLS-1 && critterCanStep(collAt(rx+1,crr),cr.L)) rx++;
+  cr.x = clamp(cr.x, lx*MTILE+R, (rx+1)*MTILE-R);
+  const cc2=Math.floor(cr.x/MTILE);            // recalculado depois do clamp de x
+  let ty=crr, by=crr;
+  while(ty>0 && critterCanStep(collAt(cc2,ty-1),cr.L)) ty--;
+  while(by<ROWS-1 && critterCanStep(collAt(cc2,by+1),cr.L)) by++;
+  cr.y = clamp(cr.y, ty*MTILE+R, (by+1)*MTILE-R);
 }
 // ── Splash de gosma no instante da morte: gotas voando (com "gravidade") a partir
 // do ponto de impacto, some rápido — nada de rastro persistente, só o momento. ──
@@ -1173,12 +1203,46 @@ function updateCritterSplashes(dt){
   for(const s of critterSplashes) s.t += dt;
   if(critterSplashes.some(s=>s.t>=s.dur)) critterSplashes = critterSplashes.filter(s=>s.t<s.dur);
 }
-function killCritter(cr){
+// "+1" verde voando do bicho morto até quem matou ⊕ ease-out com fade
+function updateCritterHealPops(dt){
+  for(const p of critterHealPops){
+    p.t += dt;
+    if(p.to && p.to.hp>0){ p.tx=p.to.x; p.ty=p.to.y-6; }  // segue o matador até chegar
+  }
+  if(critterHealPops.some(p=>p.t>=p.dur)) critterHealPops = critterHealPops.filter(p=>p.t<p.dur);
+}
+function drawCritterHealPops(){
+  if(!IMG.interface) return;
+  for(const p of critterHealPops){
+    const k = p.t/p.dur, ease = 1-(1-k)*(1-k);  // ease-out pro alvo
+    const cx = p.fx + (p.tx-p.fx)*ease, cy = p.fy + (p.ty-p.fy)*ease;
+    const a = k>0.7 ? Math.max(0, 1-(k-0.7)/0.3) : 1;
+    const sc = 1 + Math.sin(Math.PI*k)*0.4;       // leve bounce
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.globalAlpha = a;
+    ctx.scale(sc, sc);
+    drawBmpText('+10', 0, 0, 10, {color:'#6fdb8c', align:'center', shaded:true});
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+function killCritter(cr, owner){
   if(cr.st==='dead') return;
   cr.st = 'dead';
   if(cr.spawner) cr.spawner.hasKillSinceWave = true;
   spawnCritterSplash(cr.x, cr.y);
   critterSquishSound(gunshotAtten(cr.x, cr.y));
+  // Bicho morto = +1 HP pra quem matou (player ou bot). Um "+1" verde anima
+  // voando do corpo até o matador — simples, sem texto rebuscado.
+  const to = owner==='player' ? player : owner && owner.st==='alive' ? owner : null;
+  if(to){
+    to.hp = Math.min((to.maxHp||100), to.hp + 10);
+    critterHealPops.push({
+      fx: cr.x, fy: cr.y-6, tx: to.x, ty: to.y-6, to,
+      t:0, dur:0.55,
+    });
+  }
 }
 // enemies_packed.png é um PNG indexado — reduzir a escala direto dele faz o Chrome
 // vazar branco opaco nas bordas transparentes. Decodifica cada frame 1x num canvas
@@ -1257,6 +1321,7 @@ const AI_DETECTION_RADIUS = MTILE*14;
 const AI_LOS_CANDIDATES = 8;
 const AI_MEMORY_TIME = 3;
 const AI_FLEE_HP_PCT = 0.30, AI_FLEE_RECOVER_PCT = 0.55;
+const AI_CRITTER_HUNT_PCT = 0.50;     // abaixo desse HP, bicho vira prioridade
 const AI_ENGAGE_STOP_DIST = MTILE*6;
 const AI_BOT_SPEED = SPEED*0.85;   // levemente mais devagar que o player — sensação "de bot"
 const AI_AIM_ERROR = 0.05;         // erro de mira humano (rad), além do spread da própria arma
@@ -1463,6 +1528,21 @@ function pickWanderTarget(e){
   return {c:Math.floor(e.x/MTILE), r:Math.floor(e.y/MTILE)};
 }
 
+// Bicho visível mais próximo no mesmo nível (pra caçar e curar). Só conta se não
+// tiver obstáculo no caminho — o bot "enxerga" ele igual enxerga um hostile.
+function findNearbyCritter(e){
+  if(!critters.length) return null;
+  let best=null, bestD=AI_DETECTION_RADIUS;
+  for(const cr of critters){
+    if(cr.st==='dead' || cr.L!==e.L) continue;
+    const d=Math.hypot(cr.x-e.x, cr.y-e.y);
+    if(d>=bestD) continue;
+    const ray = raycast(e.x, e.y-6, cr.x, cr.y-6, e.L);
+    if(Math.hypot(ray.x-cr.x, ray.y-cr.y) < MTILE*0.8){ bestD=d; best=cr; }
+  }
+  return best;
+}
+
 // ── Máquina de estados: FLEE > AVOID_ZONE > ENGAGE > SEEK_LOOT > EXPLORE ──
 function decideBotFSM(e, dt){
   // Corte de fuga por vida baixa roda TODO frame (é só uma conta), não preso ao timer
@@ -1481,6 +1561,13 @@ function decideBotFSM(e, dt){
   e.target = target;
 
   if(e.fsm === 'FLEE') return;   // mantém fugindo até recuperar HP, mesmo sem alvo visível
+
+  // HP baixo → bicho por perto = prioridade máxima (cura +1 HP), acima de hostil/zona
+  if(hpPct <= AI_CRITTER_HUNT_PCT){
+    const cr = findNearbyCritter(e);
+    if(cr){ e.critterTarget = cr; e.fsm = 'HUNT_CRITTER'; return; }
+  }
+  e.critterTarget = null;
 
   // Fora da zona segura: prioridade alta (leva dano de verdade agora, igual o player) —
   // mas não é uma fuga cega que ignora tudo, ainda atira se um alvo aparecer no caminho
@@ -1565,6 +1652,19 @@ function updateBotAI(e, dt){
       e.aimAngle = Math.atan2((e.target.y-6)-(e.y-6), e.target.x-e.x);
       botTryFire(e, dt, e.target);
     }
+    return;
+  }
+  if(e.fsm === 'HUNT_CRITTER'){
+    // Vai atrás do bicho pra farmar +1 HP — não troca tiro com hostil enquanto isso
+    const cr = e.critterTarget;
+    if(cr && cr.st!=='dead' && cr.L===e.L){
+      setBotGoal(e, Math.floor(cr.x/MTILE), Math.floor(cr.y/MTILE));
+      e.aimAngle = Math.atan2((cr.y-6)-(e.y-6), cr.x-e.x);
+      updateBotPathing(e, dt); followPath(e, dt);
+      botTryFire(e, dt, cr);   // atira ou esfaqueia — bala/faca já casam com critter
+      return;
+    }
+    e.critterTarget = null; e.fsm = 'EXPLORE';   // bicho morreu/sumiu — volta a vagar
     return;
   }
   if(e.fsm === 'AVOID_ZONE'){
@@ -2784,6 +2884,7 @@ function draw(){
   // 3e) Números de dano + caveira subindo do corpo + estilhaços de escudo — por cima de tudo no mundo
   drawDmgPops();
   drawDeathPopsWorld();
+  drawCritterHealPops();
   drawShieldBreaks();
   // ── Aura verde de cura ──
   if(healAura > 0){
