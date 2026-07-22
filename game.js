@@ -308,6 +308,36 @@ function moveEntityAxis(ent, nx, ny, horiz){
   return true;
 }
 function moveAxis(nx,ny,horiz){ return moveEntityAxis(player, nx, ny, horiz); }
+// Corrige quem ficou cravado num colisor de bloqueio (canto entre duas paredes que o
+// check por eixo/lead do moveEntityAxis não pega, ou empurrão entre corpos que jogou
+// alguém pra dentro de uma parede — aquele empurrão não valida colisão). Roda toda vez
+// e não faz nada quando não há sobreposição, então é seguro chamar sempre.
+function unstickFromBlocks(ent){
+  const cc=Math.floor(ent.x/MTILE), rr=Math.floor(ent.y/MTILE);
+  let corrX=0, corrY=0, hit=false;
+  for(let dr=-1; dr<=1; dr++){
+    for(let dc=-1; dc<=1; dc++){
+      const c=cc+dc, r=rr+dr;
+      if((collInfo(collAt(c,r))||{}).kind !== 'block') continue;
+      const left=c*MTILE, top=r*MTILE, right=left+MTILE, bottom=top+MTILE;
+      const nx=Math.min(Math.max(ent.x,left),right), ny=Math.min(Math.max(ent.y,top),bottom);
+      const dx=ent.x-nx, dy=ent.y-ny, dist=Math.hypot(dx,dy);
+      if(dist >= PLAYER_R) continue;                    // não sobrepõe esse bloqueio
+      hit = true;
+      if(dist > 0.0001){
+        const push=PLAYER_R-dist;
+        corrX += dx/dist*push; corrY += dy/dist*push;
+      } else {
+        // Centro cravado dentro do bloco — escapa pelo eixo com menor penetração.
+        const dL=ent.x-left, dR=right-ent.x, dT=ent.y-top, dB=bottom-ent.y;
+        const m=Math.min(dL,dR,dT,dB);
+        if(m===dL) corrX -= dL+PLAYER_R; else if(m===dR) corrX += dR+PLAYER_R;
+        else if(m===dT) corrY -= dT+PLAYER_R; else corrY += dB+PLAYER_R;
+      }
+    }
+  }
+  if(hit){ ent.x += corrX; ent.y += corrY; }
+}
 function step(dt){
   elapsedT += dt;
   updateZone(dt);
@@ -337,7 +367,7 @@ function step(dt){
     moveAxis(player.x, player.y+dy/l*s, false);
   }
   // ── Inimigos: IA (decide, anda, mira, atira, pega arma), timers ──
-  aiPathBudget = 0;   // orçamento de buscas A* deste frame, repartido entre todos os bots
+  aiPathBudget = 0; aiUrgentPathBudget = 0;   // orçamento de buscas A* deste frame, repartido entre todos os bots
   for(const e of enemies){
     e.flashT = Math.max(0, e.flashT - dt);
     e.muzzleFlashT = Math.max(0, (e.muzzleFlashT||0) - dt);
@@ -380,9 +410,9 @@ function step(dt){
   }
   // Empurrão entre corpos — player e bots agora se movem, então o afastamento é
   // simétrico (cada um cede metade), diferente de quando só o player se mexia.
+  const bodies = [player];
+  for(const e of enemies) if(e.st==='alive') bodies.push(e);
   {
-    const bodies = [player];
-    for(const e of enemies) if(e.st==='alive') bodies.push(e);
     const min = PLAYER_R*2;
     for(let i=0;i<bodies.length;i++){
       for(let j=i+1;j<bodies.length;j++){
@@ -395,6 +425,9 @@ function step(dt){
       }
     }
   }
+  // Corrige quem ficou cravado num colisor de bloqueio (o empurrão acima não valida
+  // colisão, então pode jogar alguém pra dentro de uma parede vizinha).
+  for(const b of bodies) unstickFromBlocks(b);
   // Suaviza heading (bússola e minimapa seguem o movimento, não o mouse)
   let hd = player.heading - player.headingS;
   hd = Math.atan2(Math.sin(hd), Math.cos(hd));          // normaliza para [-PI, PI]
@@ -918,6 +951,16 @@ function collectSpawnPoints(total){
 // perseguem/fogem/procuram loot e baús, e atiram de volta — ver seção "IA DOS BOTS".
 const ENEMY_ROW   = 3;              // linha do sprite na folha enemies (boneco azul)
 const ENEMY_DEAD  = 3;              // último frame da linha = morto
+// Variedade visual dos bots: reaproveita as skins da folha players (mesmas
+// regras de IA/combate pra todo mundo, só a aparência muda) — cada bot sorteia
+// uma dessas ao spawnar, espalhada pelos pontos de spawn.
+const ENEMY_SKINS = [
+  { sheet:'enemies', row:ENEMY_ROW },
+  { sheet:'players',  row:0 },
+  { sheet:'players',  row:1 },
+  { sheet:'players',  row:2 },
+  { sheet:'players',  row:3 },
+];
 const CORPSE_LIFETIME = 3;          // corpo some do mapa 3s depois de morrer
 const CORPSE_FADE_DUR = 1;          // últimos 1s desse tempo: desvanece em vez de sumir de repente
 function corpseAlpha(e){            // 1 (opaco) até começar a desvanecer, depois cai linear até 0
@@ -926,7 +969,7 @@ function corpseAlpha(e){            // 1 (opaco) até começar a desvanecer, dep
 }
 // Pistola = 2 de dano (baseline) — resto reescalado nas MESMAS proporções (×0.4 em
 // cima da leva anterior, que já tinha as outras com vantagem clara sobre a pistola).
-const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:16, carabina:4, fuzil:5, smg:3, escopeta:3 };
+const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:40, carabina:4, fuzil:5, smg:3, escopeta:3 };
 // Tier de qualidade das armas (pra IA decidir "isso é upgrade?") — não é DPS bruto:
 // automáticas de cadência alta são limitadas pelo superaquecimento, e armas de tiro
 // único (sniper) valem mais que a conta crua sugere, então o ranking é curado.
@@ -944,10 +987,11 @@ function spawnEnemies(){
   player.L = (psv && psv.levels) ? psv.levels[0] : 0;
   for(let k=1; k<spawnIdx.length; k++){
     const s=spawnIdx[k], sc=s%COLS, sr=(s/COLS)|0, sv=collInfo(coll[s]);
+    const skin = ENEMY_SKINS[k % ENEMY_SKINS.length];
     enemies.push({
       id:k, x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L:(sv&&sv.levels)?sv.levels[0]:0,
       hp:100, maxHp:100, armor:100, maxArmor:100, shieldRechargeTimer:0,
-      st:'alive', flashT:0,
+      st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
       // ── combate/visual ──
       gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
       animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0,
@@ -959,7 +1003,7 @@ function spawnEnemies(){
     });
   }
   dmgPops = []; deathPops = []; shieldBreaks = []; killPulseT = 999; killBurstT = 999;
-  bullets = []; aiPathBudget = 0;
+  bullets = []; aiPathBudget = 0; aiUrgentPathBudget = 0;
 }
 function damageEnemy(e, dmg, hx, hy, owner){
   e.flashT = 0.12;
@@ -999,6 +1043,11 @@ function damageEnemy(e, dmg, hx, hy, owner){
 // aguentar até 50 bots buscando rota ao mesmo tempo sem travar o jogo.
 let aiPathBudget = 0;
 const AI_MAX_PATHS_PER_FRAME = 2;
+// Orçamento à parte pra rotas de vida-ou-morte (fugir da tempestade ou de quem tá
+// atirando) — bem mais generoso, senão esses bots ficam na fila atrás de todo mundo
+// que só tá explorando/procurando loot e correm reto (sem escada) enquanto esperam.
+let aiUrgentPathBudget = 0;
+const AI_MAX_URGENT_PATHS_PER_FRAME = 12;
 const AI_PATH_NODE_CAP = 4000;
 const AI_DETECTION_RADIUS = MTILE*14;
 const AI_LOS_CANDIDATES = 8;
@@ -1086,28 +1135,45 @@ function updateBotPathing(e, dt){
   e.repathTimer -= dt;
   const needsPath = e.path.length===0 || e.pathIndex>=e.path.length;
   const stuck = e.stuckTimer > 0.6;
-  if((needsPath || e.repathTimer<=0 || stuck) && aiPathBudget < AI_MAX_PATHS_PER_FRAME){
-    aiPathBudget++;
-    const sc=Math.floor(e.x/MTILE), sr=Math.floor(e.y/MTILE);
-    e.path = findPath(sc, sr, e.L, e.pathGoal.c, e.pathGoal.r);
-    e.pathIndex = 0; e.repathTimer = 1.5+Math.random(); e.stuckTimer = 0;
-    // Meta inalcançável (path vazio) duas vezes seguidas — abandona em vez de ficar
-    // tentando a mesma rota impossível pra sempre (é isso que trava o bot num lugar só).
-    if(e.path.length===0){
-      e.pathFailCount = (e.pathFailCount||0) + 1;
-      if(e.pathFailCount >= 2){ e.pathGoal=null; e.pathFailCount=0; e.wanderTarget=null; e.lootGoal=null; }
-    } else {
-      e.pathFailCount = 0;
-    }
+  if(!(needsPath || e.repathTimer<=0 || stuck)) return;
+  const urgent = e.fsm==='FLEE' || e.fsm==='AVOID_ZONE';
+  const hasBudget = urgent ? aiUrgentPathBudget < AI_MAX_URGENT_PATHS_PER_FRAME
+                            : aiPathBudget < AI_MAX_PATHS_PER_FRAME;
+  if(!hasBudget) return;
+  if(urgent) aiUrgentPathBudget++; else aiPathBudget++;
+  const sc=Math.floor(e.x/MTILE), sr=Math.floor(e.y/MTILE);
+  e.path = findPath(sc, sr, e.L, e.pathGoal.c, e.pathGoal.r);
+  e.pathIndex = 0; e.repathTimer = 1.5+Math.random(); e.stuckTimer = 0;
+  // Meta inalcançável (path vazio) duas vezes seguidas — abandona em vez de ficar
+  // tentando a mesma rota impossível pra sempre (é isso que trava o bot num lugar só).
+  if(e.path.length===0){
+    e.pathFailCount = (e.pathFailCount||0) + 1;
+    if(e.pathFailCount >= 2){ e.pathGoal=null; e.pathFailCount=0; e.wanderTarget=null; e.lootGoal=null; }
+  } else {
+    e.pathFailCount = 0;
   }
 }
 // Anda em direção ao próximo waypoint do path atual (mesmo mover por eixo do player).
 function followPath(e, dt){
-  if(!e.path.length || e.pathIndex >= e.path.length){ e.moving=false; return false; }
-  const wp = e.path[e.pathIndex];
-  const wx = wp.c*MTILE+MTILE/2, wy = wp.r*MTILE+MTILE/2;
-  const dx = wx-e.x, dy = wy-e.y, dist = Math.hypot(dx,dy);
-  if(dist < MTILE*0.5){ e.pathIndex++; return followPath(e, dt); }
+  if(e.path.length && e.pathIndex < e.path.length){
+    const wp = e.path[e.pathIndex];
+    const wx = wp.c*MTILE+MTILE/2, wy = wp.r*MTILE+MTILE/2;
+    const dx = wx-e.x, dy = wy-e.y, dist = Math.hypot(dx,dy);
+    if(dist < MTILE*0.5){ e.pathIndex++; return followPath(e, dt); }
+    const s = AI_BOT_SPEED*dt, l = dist||1;
+    const okX = moveEntityAxis(e, e.x+dx/l*s, e.y, true);
+    const okY = moveEntityAxis(e, e.x, e.y+dy/l*s, false);
+    e.moving = true; e.aimAngle = Math.atan2(dy,dx); e.flip = dx<0;
+    e.stuckTimer = (!okX && !okY) ? e.stuckTimer+dt : 0;
+    return true;
+  }
+  // Sem waypoints ainda prontos (esperando a vez no orçamento de pathfinding por
+  // frame, ou meta momentaneamente sem rota) — anda direto rumo ao objetivo em vez
+  // de ficar parado esperando; o bot NUNCA deve travar parado.
+  if(!e.pathGoal) { e.moving=false; return false; }
+  const gx = e.pathGoal.c*MTILE+MTILE/2, gy = e.pathGoal.r*MTILE+MTILE/2;
+  const dx = gx-e.x, dy = gy-e.y, dist = Math.hypot(dx,dy);
+  if(dist < MTILE*0.5){ e.moving=false; return false; }
   const s = AI_BOT_SPEED*dt, l = dist||1;
   const okX = moveEntityAxis(e, e.x+dx/l*s, e.y, true);
   const okY = moveEntityAxis(e, e.x, e.y+dy/l*s, false);
@@ -1642,7 +1708,7 @@ function drawEnemy(e){
   ctx.save(); ctx.translate(e.x, e.y-6);
   if(e.flip) ctx.scale(-1,1);
   if(e.flashT>0) ctx.filter='brightness(2.2) saturate(0.4)';   // flash branco ao levar tiro
-  ctx.drawImage(IMG.enemies, frame*SPR, ENEMY_ROW*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+  ctx.drawImage(IMG[e.sheet], frame*SPR, e.row*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
   ctx.restore();
   if(e.st==='alive'){
     drawBotWeapon(e);   // arma que o bot carrega — sempre visível, começa com pistola
@@ -1982,6 +2048,40 @@ function drawZoneFX(){
     ctx.restore();
   }
 }
+// ── Indicadores de ameaça na borda da tela: aponta pra TODOS os bots vivos que
+// estão fora da visão no momento — igual ao minimapa, mostra todo mundo.
+function drawThreatIndicators(){
+  const psx = (player.x - cam.x)*VIEW_SCALE, psy = (player.y - cam.y)*VIEW_SCALE;
+  const margin = 26, minX=margin, minY=margin, maxX=VW-margin, maxY=VH-margin;
+  const T = performance.now()/1000;
+  for(const e of enemies){
+    if(e.st!=='alive') continue;
+    const engaging = e.fsm==='ENGAGE' && e.target===player;
+    const sx = (e.x-cam.x)*VIEW_SCALE, sy = (e.y-cam.y)*VIEW_SCALE;
+    if(sx>=0 && sx<=VW && sy>=0 && sy<=VH) continue;   // já visível na tela — sem indicador
+    const ang = Math.atan2(e.y-player.y, e.x-player.x);
+    const dx=Math.cos(ang), dy=Math.sin(ang);
+    let t=Infinity;
+    if(dx>0) t=Math.min(t,(maxX-psx)/dx); else if(dx<0) t=Math.min(t,(minX-psx)/dx);
+    if(dy>0) t=Math.min(t,(maxY-psy)/dy); else if(dy<0) t=Math.min(t,(minY-psy)/dy);
+    if(!isFinite(t)) t=0;
+    const px = psx+dx*t, py = psy+dy*t;
+    const pulse = engaging ? 0.75+0.25*Math.sin(T*10) : 0.7;
+    const s = (engaging ? 7 : 5.5) * (engaging ? 1+0.12*Math.sin(T*10) : 1);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang + Math.PI/2);   // ponta aponta pra "cima" por padrão — alinha com a direção calculada
+    ctx.fillStyle = engaging ? 'rgba(255,45,45,'+pulse.toFixed(3)+')' : 'rgba(255,150,40,0.7)';
+    ctx.strokeStyle = 'rgba(30,0,0,.6)'; ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(-s*0.8, s*0.6);
+    ctx.lineTo(s*0.8, s*0.6);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
 function drawZoneOnMinimap(cx, cy, z){
   if(!zoneCurrent) return;
   // Zona atual
@@ -2065,7 +2165,7 @@ function draw(){
 
   // 1.95) inimigos — mortos primeiro (corpo no chão, desvanece e some depois de
   // CORPSE_LIFETIME), vivos por cima
-  if(IMG.enemies){
+  if(IMG.enemies && IMG.players){
     for(const e of enemies) if(e.st==='dead' && e.deathT<CORPSE_LIFETIME){
       const a = corpseAlpha(e);
       if(a<1){ ctx.save(); ctx.globalAlpha=a; }
@@ -2245,7 +2345,7 @@ function draw(){
 	  // ou seja, a regra de um interferindo no outro. Por isso: todo "esconder" primeiro,
 	  // e só então TODOS os que devem ficar visíveis são redesenhados por cima, por último
 	  // — assim ninguém fica marcado por engano pela oclusão de um vizinho.
-	  if(IMG.enemies){
+	  if(IMG.enemies && IMG.players){
 	    const _coveredFor = (c, r, L) => {
 	      const ci = collInfo(collAt(c, r));
 	      if(ci && ci.kind==='piso' && ci.level > L) return true;
@@ -2417,6 +2517,7 @@ function draw(){
   // ═══════════ HUD (barras+kills · minimapa+bússola+chips · slots) ═══════════
   ctx.setTransform(1,0,0,1,0,0);
   drawZoneFX();      // vinheta, seta pra safe e banner (embaixo do HUD)
+  drawThreatIndicators();   // seta na borda apontando pra bots fora da tela te ameaçando
   drawBars();
   drawMinimap();
   drawSlots();
@@ -2563,6 +2664,15 @@ function drawMinimap(){
     ctx.fillStyle='#f2c14e';                                   // baús fechados = pontos dourados
     for(const b of chests){ if(b.st!=='open')
       ctx.fillRect(cx+(b.c+0.5-pc)*z-2, cy+(b.r+0.5-pr)*z-2, 4, 4); }
+    // Todos os inimigos vivos = pontos vermelhos (mais brilhante quem tá te engajando)
+    for(const e of enemies){
+      if(e.st!=='alive') continue;
+      const engaging = e.fsm==='ENGAGE' && e.target===player;
+      ctx.fillStyle = engaging ? '#ff2d2d' : '#c23b3b';
+      ctx.beginPath();
+      ctx.arc(cx+(e.x/MTILE-pc)*z, cy+(e.y/MTILE-pr)*z, engaging?2.6:2, 0, 6.28);
+      ctx.fill();
+    }
     // Zonas no minimapa
     drawZoneOnMinimap(cx, cy, z);
     // Overlay avermelhado fora da safe no minimapa
