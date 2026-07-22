@@ -261,6 +261,9 @@ let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open
 let kills = 0;                      // abates (bots ainda não existem — já fica pronto)
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
+const PLAYER_NAME = '★ você';
+let killFeed = [];                   // {victim,killer,t,dur} — mini chat de abates no canto esquerdo
+const KILL_FEED_DUR = 6;            // segundos que cada entrada fica visível
 let hpGhost = 100, armorGhost = 50; // trilha "fantasma" das barras (dano recente escorre)
 let shieldRechargeTimer = 0;      // segundos sem tomar dano (após 5s, recarrega escudo)
 let prevHp = 100;                 // hp do frame anterior (pra detectar dano)
@@ -461,6 +464,7 @@ function step(dt){
   }
   updateCritterSplashes(dt);
   updateCritterHealPops(dt);
+  updateKillFeed(dt);
   // Empurrão entre corpos — player e bots agora se movem, então o afastamento é
   // simétrico (cada um cede metade), diferente de quando só o player se mexia.
   // Player morto sai da lista (corpo não empurra ninguém, igual bot morto).
@@ -879,7 +883,7 @@ function updateMelee(ent, dt, hostiles){
   if(ent===player) shakePhase = Math.max(shakePhase, 0.4);
   gunSound(mw.snd, ent===player ? 1 : gunshotAtten(ent.x, ent.y));
   if(targetIsCritter) killCritter(target, ent===player ? 'player' : ent);
-  else if(target===player) damagePlayer(mw.dmg, target.x, target.y-6);
+  else if(target===player) damagePlayer(mw.dmg, target.x, target.y-6, ent);
   else damageEnemy(target, mw.dmg, target.x, target.y-6, ent===player ? 'player' : ent);
 }
 
@@ -972,7 +976,7 @@ function bulletStep(b, dt){
     if(h && h.t < bestT){ bestT=h.t; bestPt=h; hitPlayer=false; hitEnemy=null; hitCritter=cr; }
   }
   if(bestPt){
-    if(hitPlayer) damagePlayer(GUN_DMG[b.w]||10, bestPt.x, bestPt.y);
+    if(hitPlayer) damagePlayer(GUN_DMG[b.w]||10, bestPt.x, bestPt.y, b.owner);
     else if(hitCritter) killCritter(hitCritter, b.owner);
     else damageEnemy(hitEnemy, GUN_DMG[b.w]||10, bestPt.x, bestPt.y, b.owner);
     b.x=bestPt.x; b.y=bestPt.y; b.tx=b.x; b.ty=b.y; b.life=0;   // faísca no ponto do impacto
@@ -986,7 +990,7 @@ function bulletStep(b, dt){
   }
 }
 // ── Dano no player (bala de bot) — espelha damageEnemy: escudo absorve primeiro ──
-function damagePlayer(dmg, hx, hy){
+function damagePlayer(dmg, hx, hy, killer){
   const px = hx ?? player.x, py = (hy ?? player.y-6) - 6;
   let toArmor = 0, toHp = dmg;
   if(player.armor > 0){
@@ -999,13 +1003,14 @@ function damagePlayer(dmg, hx, hy){
   if(toHp <= 0){ enemyHitSound(); return; }
   player.hp -= toHp;
   spawnDmgPop(px, py - (toArmor>0?10:0), toHp, player.hp<=0);
-  if(player.hp <= 0) killPlayer(); else enemyHitSound();
+  if(player.hp <= 0) killPlayer(killer); else enemyHitSound();
 }
 // ── Morte do player: único ponto de saída — reaproveita o overlay/#startBtn do menu ──
 const PLAYER_DEAD = 3;   // último frame da folha players = pose de morte (igual ENEMY_DEAD)
-function killPlayer(){
+function killPlayer(killer){
   if(state !== 'playing') return;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
+  pushKillFeed(player, killer);
   const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
   const h1 = overlay.querySelector('h1'), p = overlay.querySelector('p');
   if(h1) h1.textContent = 'VOCÊ MORREU';
@@ -1079,12 +1084,58 @@ const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:40, carabina:4, fuzil:5, 
 // único (sniper) valem mais que a conta crua sugere, então o ranking é curado.
 const WEAPON_TIER = { pistola:1, escopeta:2, smg:2, magnum:3, carabina:3, uzi:3, sniper:4, fuzil:4 };
 const weaponScore = id => { const w=WEAPONS[id]; return w.pellets*(GUN_DMG[id]||10)/w.rate; };
-const TOTAL_COMBATANTS = 50;     // player + bots
-let enemies = [];
+// ── Nomes BR pros bots (200+ criativos com special chars) ──
+const BR_NAMES=[
+'☠️xX_BalaPerdida_Xx','ツTiroCerteiro','⚡RaioSupremo','🩸SangueFrio','💀OssosDoOfício',
+'VaiDeBase','CaiuN⊚Coffin','snipeGODツ','🔥Churrasqueiro','🌀Fura-Tempestade',
+'LAG_KILLER','30fps_Gamer','x√-1_C4P4','MarcolaRush','SentaAPuaBR',
+'ZéDropaTudo','TioDoChurras','PavãoArmado','KidBengala','AlemãoBrabo',
+'G3X_M4T4D0R','CamperNoob','RatoDeSpawn','Viper_X7','Ghost_Pepper',
+'☢RadioAtivo','Fênix☄Caída','CarniçaNinja','ToxinaVoadora','MoshPitBullet',
+'CapivaraSlow','RAGE_QUITTER','PneuQueimado','M0RTO_antes_de_entrar','CascaDeBala',
+'PuxaFerro','FarofaArmada','DerrubaMuro','TripéTático','🔪NaGarganta',
+'CacetinhoArmado','GuriDasGaláxias','xX_Capeta_Xx','PistoleiroPapudo','BalaDePrata',
+'Dragão_Felpudo','Strike_Fake','MãoDeVaca','PoeiraCósmica','V8_Bicudo',
+'ToalhaMolhada','AsaNoturna','DocinhoAzedo','PapaLéguasSilencioso','CavaloDeTróiaBR',
+'🔫DuZonaSul','RojãoTetudo','SapãoCaronte','BailarinaDaMorte','AcerolaNinja',
+'OgroSonolento','GalinhaArmada','MuralhaChinesa','PanteraCoringa','CorvoNoturnoBR',
+'TrovãoSilencioso','MinhocaAtômica','CaranguejoElétrico','jacaré.aéreo','☕CaféPreto',
+'ZumbiNutella','CaixaDeLeite','MotocaDeLenha','Dr0p4d0r4','BiliscadaBR',
+'SalsichaArmada','R@T0_DE_ESG0T0','PipocoDoBem','GriloFalanteツ','BruxaDoSertão',
+'FerrugemTática','VentaniaNoturna','LagartixaNuclear','PirataDeAsfalto','MáquinaDeVento',
+'CapoteBR','RachaBucho','FogueteSemRé','GatoDeBotas⚔','BolebaMortal',
+'Xulipa_AtôMica','DedoNoGatilho','TresOitãoLoko','PamonhaAssassina','FamíliaBala',
+'🌀TormentaSeco','CarniçaCity','MotoSerraVoadora','BarataTonta☢','PomboBombado',
+'RespingoBR','FrangoCamper','DedoDuroDoLeste','Pipoco_Strike','CupimDeAço',
+'SabugoNuclear','ZéDoPneu','MarmitaFria','CalçaJeansRasgada','PéDeChinelo',
+'OgroBR','CarcaráSniper','PitúAtomico','RuimDeMira','MochilaDeLata',
+'BacamarteTorto','FaroleiroCego','PernaDePau','CuspidorDeBala','RedeMortalBR',
+'TatarugaNinja','Arroba_Trovao','PoteDeMorte','ForróNoInferno','RemendoTático',
+'GuaxinimSupremo','Vulgo_Batatinha','DesviadorDeBala','🔧ChaveInglesa','CristalNoturno',
+'CalangoVoador','PeixeEnsaboado','Malvadeza_007','ÓdioSanguessuga','RachaCucaBR',
+'AbacaxiDeFuzil','CamaleãoCaído','BarrilDePólvora','MorteLentaBR','🦴OssoDuro',
+'PistolaDeBrinquedo','RachaMói','MoluscoContra-Ataca','R@bã0','TiburcioArmado',
+'PneumoniaLetal','CatracaVoadora','ZéDasCouves','GolpeBaixoツ','PipocaDoMal',
+'BolebaSniper','NervosãoDeAço','SovaqueiraBR','AranhaDeAço','♿CadeiraElétrica',
+'XaropeDaMorte','DedãoPodre','CrocsComGelo','ChineloVoador','TorresmoQuente',
+'BodeElétrico','FumaçaSemFogo','LasanhaDeChumbo','PeidãoSônico','TrapelaBR',
+'Gambiarra_Pro','PiresVoador','NhoqueDaMorte','MarrecoArmado','FoiceCega',
+'JavaliFantasma','PicoléDeLimão','Catapimba','SacoDeAreia','RelâmpaG0_BR',
+'BanquetaTática','GalinhoCaipira','CarroçaNinja','BafoDeOnça','LesmaBaleada',
+'RaiTreta','CanudoNuclear','PãoComBala','ÍndioDeFuzil','TubarãoVoador',
+'PreguiçaAtômica','MacacoLocoツ','BonecoDePiche','SerraElétrica☠','FubáLetal',
+'PernaCabeluda','TrucoBaleado','PamonhaDeAço','CandiruElétrico','SinoDaMorte',
+'PistolinhaTorta','FuraOlhoBR','🦴CarcaçaVelha','GalinhaDagua','PoeiraRadioativa',
+'ReiDasPipas','PudimDeChumbo','VéioDoBar','SurfistaDeBala','ChavãoNuclear',
+'BOLOLO_H4H4','PéDeMoleque','BexigaVoadora','GarfoDeAço','CaboDaciolo⚡',
+'EsqueletoVivo','BolinhaDeGude','CaldoDeCanaArmado','TiroDeMisericórdia','MiojoAtômico',
+];
+let usedNames=[];   // nomes já sorteados nesta partida (sem repetir)
+
 // ── Bicho fraco (spawner configurável no editor): nasce, cresce e fica andando
 // devagar SÓ no próprio nível — nunca usa escada nem ponte. Qualquer bala ou golpe
-// de faca mata (hp efetivo 1). Cada spawner solta uma leva nova só depois que pelo
-// menos um da leva anterior morreu (se ainda não tiver matado nenhum, espera).
+const TOTAL_COMBATANTS = 50;     // player + bots
+let enemies = [];
 let critterSpawners = [];   // do mapa: {c,r,L,qty,maxAlive} + timer/estado de leva
 let critters = [];          // instâncias vivas: {x,y,L,st,animT,spawner,...}
 let critterSplashes = [];   // splash de gosma no instante da morte: {x,y,drops,t,dur}
@@ -1094,6 +1145,9 @@ const CRITTER_SPEED = SPEED * 0.13;   // bem devagar
 const CRITTER_WAVE_CHECK = 8;         // segundos entre checagens de leva nova
 function spawnEnemies(){
   enemies = [];
+  killFeed = [];
+  usedNames = shuffleInPlace([...BR_NAMES]);
+  let ni = 0;   // índice de nome pro próximo bot
   const spawnIdx = collectSpawnPoints(TOTAL_COMBATANTS);
   shuffleInPlace(spawnIdx);
   // Primeiro ponto sorteado vira o spawn do player — todo mundo disputa o mesmo pool
@@ -1103,8 +1157,10 @@ function spawnEnemies(){
   for(let k=1; k<spawnIdx.length; k++){
     const s=spawnIdx[k], sc=s%COLS, sr=(s/COLS)|0, sv=collInfo(coll[s]);
     const skin = ENEMY_SKINS[k % ENEMY_SKINS.length];
+    const nome = usedNames[ni]; ni++;
     enemies.push({
-      id:k, x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L:(sv&&sv.levels)?sv.levels[0]:0,
+      id:k, nome: nome||('?'+k),
+      x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L:(sv&&sv.levels)?sv.levels[0]:0,
       hp:100, maxHp:100, armor:100, maxArmor:100, shieldRechargeTimer:0,
       st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
       healAura:0, medkits:2,
@@ -1281,6 +1337,17 @@ function drawCritter(cr){
   ctx.restore();
 }
 
+function pushKillFeed(victim, killer){
+  const vn = victim===player ? PLAYER_NAME : (victim.nome||'?');
+  const kn = killer==='player' ? PLAYER_NAME : (killer && killer.nome ? killer.nome : 'a zona');
+  killFeed.push({victim:vn, killer:kn, t:0, dur:KILL_FEED_DUR, isPlayer:(victim===player||killer==='player')});
+  // Mantém só as 8 mais recentes — mini chat limitado
+  while(killFeed.length > 8) killFeed.shift();
+}
+function updateKillFeed(dt){
+  for(const kf of killFeed) kf.t += dt;
+  if(killFeed.some(kf=>kf.t>=kf.dur)) killFeed = killFeed.filter(kf=>kf.t<kf.dur);
+}
 function damageEnemy(e, dmg, hx, hy, owner){
   e.flashT = 0.12;
   const px = hx ?? e.x, py = (hy ?? e.y-6) - 6;
@@ -1304,6 +1371,7 @@ function damageEnemy(e, dmg, hx, hy, owner){
   spawnDmgPop(px, py - (toArmor>0?10:0), toHp, kill); // se veio dano de escudo antes, empilha o número da vida acima
   if(kill){
     e.hp = 0; e.st='dead'; e.deathT = 0;
+    pushKillFeed(e, owner);   // mini chat de abate
     enemyDieSound(atten);
     spawnDeathPop(e.x, e.y-6);
     if(byPlayer){                                      // abate só conta no contador do PLAYER
@@ -2241,7 +2309,7 @@ function updateZone(dt){
         const dmg = zoneNum < 5 ? 1 : 1 + (zoneNum - 4);  // 1 até zona 6, depois escala
         player.hp -= dmg;
         zoneHitFlash = 1;
-        if(player.hp <= 0) killPlayer();
+        if(player.hp <= 0) killPlayer('a zona');
       }
     } else {
       zoneDmgTimer = 0;
@@ -2988,6 +3056,7 @@ function draw(){
   drawThreatIndicators();   // seta na borda apontando pra bots fora da tela te ameaçando
   drawBars();
   drawMinimap();
+  drawKillFeed();
   drawSlots();
 
   // Custom crosshair (por cima de tudo)
@@ -3444,6 +3513,26 @@ function tinyFlame(x,y,s,color,flicker){
 function keycap(x,y,label,gold){
   drawCard(x, y, 22, 22, gold ? UI_CARD.gold : UI_CARD.gray, 6);   // mini-card da folha
   drawBmpText(label, x+11, y+12, 13, {color:'#fff', align:'center'});
+}
+function drawKillFeed(){
+  if(!killFeed.length || !IMG.interface) return;
+  // Esquerda, colado acima do cartão de vida. A caveira é a MESMA do chip de
+  // abates (topo esquerdo), só que menor pra caber na linha.
+  const X=20, sz=14, gap=4, Y0=VH-120, icS=16;
+  for(let i=0;i<killFeed.length;i++){
+    const kf=killFeed[i];
+    const a = kf.t<0.5 ? 1 : Math.max(0, 1-(kf.t-0.5)/(kf.dur-0.5));
+    const killerColor = kf.isPlayer ? '#f4c95d' : 'rgba(255,255,255,.75)';
+    ctx.save(); ctx.globalAlpha=a;
+    const kx = X;
+    const kw = drawBmpText(kf.killer, kx, Y0 - i*(sz+gap), sz, {color:killerColor, valign:'bottom'});
+    const sy = Y0 - i*(sz+gap);
+    const sx = kx + kw + 4;
+    const iy = sy - sz/2 - icS/2 + 2;   // centraliza a caveira com o texto
+    ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, sx, iy, icS, icS);
+    drawBmpText(kf.victim, sx + icS + 4, sy, sz, {color:'#d92c1f', valign:'bottom'});
+    ctx.restore();
+  }
 }
 function drawSlots(){
   const T=performance.now()/1000;
