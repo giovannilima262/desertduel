@@ -344,16 +344,18 @@ function step(dt){
   }
   if(player.hp < prevHp) shieldRechargeTimer = 0;   // tomou dano → reseta recarga
   prevHp = player.hp;
-  let dx=0,dy=0;
-  if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
-  if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
-  player.moving=!!(dx||dy);
-  if(player.moving){
-    const l=Math.hypot(dx,dy), s=SPEED*dt;
-    if(dx) player.flip = dx<0;
-    player.heading = Math.atan2(dy, dx);               // direção do movimento (WASD)
-    moveAxis(player.x+dx/l*s, player.y, true);
-    moveAxis(player.x, player.y+dy/l*s, false);
+  if(player.hp>0){                                     // morto não anda, não mira, não atira
+    let dx=0,dy=0;
+    if(keys['w']||keys['arrowup'])dy--;   if(keys['s']||keys['arrowdown'])dy++;
+    if(keys['a']||keys['arrowleft'])dx--; if(keys['d']||keys['arrowright'])dx++;
+    player.moving=!!(dx||dy);
+    if(player.moving){
+      const l=Math.hypot(dx,dy), s=SPEED*dt;
+      if(dx) player.flip = dx<0;
+      player.heading = Math.atan2(dy, dx);               // direção do movimento (WASD)
+      moveAxis(player.x+dx/l*s, player.y, true);
+      moveAxis(player.x, player.y+dy/l*s, false);
+    }
   }
   // ── Inimigos: IA (decide, anda, mira, atira, pega arma), timers ──
   aiPathBudget = 0; aiUrgentPathBudget = 0;   // orçamento de buscas A* deste frame, repartido entre todos os bots
@@ -399,7 +401,8 @@ function step(dt){
   }
   // Empurrão entre corpos — player e bots agora se movem, então o afastamento é
   // simétrico (cada um cede metade), diferente de quando só o player se mexia.
-  const bodies = [player];
+  // Player morto sai da lista (corpo não empurra ninguém, igual bot morto).
+  const bodies = player.hp>0 ? [player] : [];
   for(const e of enemies) if(e.st==='alive') bodies.push(e);
   {
     const min = PLAYER_R*2;
@@ -421,11 +424,13 @@ function step(dt){
   let hd = player.heading - player.headingS;
   hd = Math.atan2(Math.sin(hd), Math.cos(hd));          // normaliza para [-PI, PI]
   player.headingS += hd * Math.min(1, dt * 14);
-  player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0; // frame 3 = morte, skip
+  if(player.hp>0){
+    player.animT+=dt; player.frame = player.moving ? 1+(Math.floor(player.animT*8)%2) : 0;
+  }   // morto: frame fica travado em PLAYER_DEAD (setado 1x em killPlayer)
 
   // ── Pegar arma do chão (troca AO ENTRAR no item; parado em cima não re-troca) ──
   let curOverlap = -1;
-  for(let gi=0; gi<gunItems.length; gi++){
+  if(player.hp>0) for(let gi=0; gi<gunItems.length; gi++){
     const it=gunItems[gi];
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
     if(Math.hypot(player.x-gx, player.y-gy) < MTILE*0.6){ curOverlap=gi; break; }
@@ -445,7 +450,7 @@ function step(dt){
   for(const b of chests){
     const bx=b.c*MTILE+MTILE/2, by=b.r*MTILE+MTILE/2;
     if(b.st==='closed'){
-      let claimant = Math.hypot(player.x-bx, player.y-by) < CHEST_RANGE ? player : null;
+      let claimant = (player.hp>0 && Math.hypot(player.x-bx, player.y-by) < CHEST_RANGE) ? player : null;
       if(!claimant) for(const e of enemies){
         if(e.st==='alive' && Math.hypot(e.x-bx, e.y-by) < CHEST_RANGE){ claimant=e; break; }
       }
@@ -888,9 +893,10 @@ function damagePlayer(dmg, hx, hy){
   if(player.hp <= 0) killPlayer(); else enemyHitSound();
 }
 // ── Morte do player: único ponto de saída — reaproveita o overlay/#startBtn do menu ──
+const PLAYER_DEAD = 3;   // último frame da folha players = pose de morte (igual ENEMY_DEAD)
 function killPlayer(){
   if(state !== 'playing') return;
-  player.hp = 0; state = 'dead';
+  player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
   const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
   const h1 = overlay.querySelector('h1'), p = overlay.querySelector('p');
   if(h1) h1.textContent = 'VOCÊ MORREU';
@@ -1844,8 +1850,8 @@ function updateZone(dt){
   if(zoneBanner){ zoneBanner.t -= dt; if(zoneBanner.t <= 0) zoneBanner = null; }
   zoneHitFlash = Math.max(0, zoneHitFlash - dt*2);
   updateZoneParts(dt);
-  // Dano fora da zona
-  if(zoneCurrent && zoneState!=='idle'){
+  // Dano fora da zona (corpo morto não sofre mais dano/flash de zona)
+  if(player.hp>0 && zoneCurrent && zoneState!=='idle'){
     const dist = Math.hypot(player.x - zoneCurrent.cx, player.y - zoneCurrent.cy);
     if(zoneCurrent.r <= 0 || dist > zoneCurrent.r){
       zoneDmgTimer += dt;
@@ -2292,7 +2298,8 @@ function draw(){
 	  };
 
 	  // Se arma toca ponte, renderiza atrás de tudo (antes da oclusão de piso)
-	  if(_weaponOnBridge) _drawWeapon();
+	  // Morto não carrega arma — igual bot morto (drawEnemy só chama drawBotWeapon se e.st==='alive').
+	  if(_weaponOnBridge && player.hp>0) _drawWeapon();
 
   // armas no chão — na frente dos pisos
   if(IMG.weapons){
@@ -2414,7 +2421,7 @@ function draw(){
 	      if(player.flip) ctx.scale(-1,1);
 	      ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	      ctx.restore();
-	      if(!_weaponOnBridge && IMG.weapons) _drawWeapon();
+	      if(!_weaponOnBridge && IMG.weapons && player.hp>0) _drawWeapon();
 	    } else {
 	      // Escondido (ponte/piso acima/sombra): sem o sprite cheio, só um
 	      // contorno por cima do chão redesenhado, pra saber onde está.
@@ -2886,7 +2893,7 @@ function drawMinimap(){
     const vx=panelX, vy=py;
     drawCard(vx, vy, tw2, th, UI_CARD.gray, 8);
     drawBmpText('VIVOS', vx+12, vy+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
-    drawBmpText(1+enemies.filter(e=>e.st==='alive').length, vx+12, vy+21, 23, {color:'#fff', valign:'top'});
+    drawBmpText((player.hp>0?1:0)+enemies.filter(e=>e.st==='alive').length, vx+12, vy+21, 23, {color:'#fff', valign:'top'});
     // Ícone: a mesma seta do jogador (bússola/topo da cabeça) — reaproveita o motivo do próprio jogo
     const hx=vx+tw2-19, hy=vy+th/2+3;
     ctx.save(); ctx.translate(hx, hy);
@@ -3143,7 +3150,9 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
 let state='menu', last=0;
 function frame(t){
   const dt=Math.min(0.05,(t-last)/1000)||0; last=t;
-  if(state==='playing'){ step(dt); draw(); }
+  // 'dead': o player já morreu, mas a partida continua rolando atrás do overlay
+  // (bots, zona, balas) — só o player para de responder a input.
+  if(state==='playing' || state==='dead'){ step(dt); draw(); }
   requestAnimationFrame(frame);
 }
 function start(){
