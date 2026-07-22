@@ -610,11 +610,17 @@ function step(dt){
   for(const s of smoke){ s.life -= dt; }
   smoke = smoke.filter(s => s.life > 0);
 
-  // Camera (with damped oscillation screen shake)
-  const shakeX = Math.sin(shakePhase*55)*shakePhase*1.5;
-  const shakeY = Math.cos(shakePhase*67)*shakePhase*1;
-  const tx=clamp(player.x-(VW/VIEW_SCALE)/2, 0, Math.max(0,WORLD_W-VW/VIEW_SCALE));
-  const ty=clamp(player.y-(VH/VIEW_SCALE)/2, 0, Math.max(0,WORLD_H-VH/VIEW_SCALE));
+  // Camera: segue o player ou, se morto, o último inimigo da corrente (quem te
+  // matou → quem matou ele → …), trocando na hora quando o atual morre.
+  if(player.hp>0) spectator = null;
+  else if(spectator && spectator.st!=='alive') spectator = null;
+  const lookAt = player.hp>0 ? player : spectator;
+  let shakeX=0, shakeY=0, tx=0, ty=0;
+  if(lookAt){
+    if(player.hp>0){ shakeX = Math.sin(shakePhase*55)*shakePhase*1.5; shakeY = Math.cos(shakePhase*67)*shakePhase*1; }
+    tx=clamp(lookAt.x-(VW/VIEW_SCALE)/2, 0, Math.max(0,WORLD_W-VW/VIEW_SCALE));
+    ty=clamp(lookAt.y-(VH/VIEW_SCALE)/2, 0, Math.max(0,WORLD_H-VH/VIEW_SCALE));
+  }
   cam.x+=(tx-cam.x)*0.04; cam.y+=(ty-cam.y)*0.04;  // delay generoso — câmera bem solta
   cam.x += shakeX; cam.y += shakeY;  // direct offset, returns to 0 naturally
 }
@@ -1011,6 +1017,8 @@ function killPlayer(killer){
   if(state !== 'playing') return;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
   pushKillFeed(player, killer);
+  playerKiller = killer && killer.st==='alive' ? killer : null;
+  spectator = playerKiller;   // foca em quem te matou
   const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
   const h1 = overlay.querySelector('h1'), p = overlay.querySelector('p');
   if(h1) h1.textContent = 'VOCÊ MORREU';
@@ -1146,6 +1154,7 @@ const CRITTER_WAVE_CHECK = 8;         // segundos entre checagens de leva nova
 function spawnEnemies(){
   enemies = [];
   killFeed = [];
+  spectator = null; playerKiller = null;
   usedNames = shuffleInPlace([...BR_NAMES]);
   let ni = 0;   // índice de nome pro próximo bot
   const spawnIdx = collectSpawnPoints(TOTAL_COMBATANTS);
@@ -1378,6 +1387,8 @@ function damageEnemy(e, dmg, hx, hy, owner){
       kills++; killCollectSound(); killPulseT = 0; killBurstT = 0;
       shakePhase = Math.max(shakePhase, 0.4);
     }
+    // Corrente do espectador: se quem morreu era o foco, segue o assassino
+    if(owner && owner.st==='alive' && e===spectator) spectator = owner;
   } else enemyHitSound(atten);
 }
 
@@ -2612,6 +2623,8 @@ function drawPlayerOutline(px, py, flip){
 
 //======================= RENDER =======================
 let cam={x:0,y:0};
+let spectator = null;       // inimigo sendo seguido depois que o player morre
+let playerKiller = null;   // quem matou o player (pra focar nele primeiro)
 function draw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#c99a63'; ctx.fillRect(0,0,VW,VH);
