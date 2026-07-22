@@ -143,17 +143,6 @@ function coversHero(i,L){
   if(ci && ci.kind==='escada') return Math.min(...ci.levels) > L;
   return false;
 }
-function blockNearBridge(c,r,L){
-  // Returns true if this block collider is adjacent (8-way) to a bridge cell at level L.
-  // Used so blocks around a bridge render on top of the player when they're on that bridge.
-  for(let dr=-1; dr<=1; dr++){
-    for(let dc=-1; dc<=1; dc++){
-      if(dr===0 && dc===0) continue;
-      if(bridgeActive(overAt(c+dc, r+dr), L)) return true;
-    }
-  }
-  return false;
-}
 function playerOverlapsBridge(px, py, L){
   // Check all tile cells that the player's sprite (SPR x SPR, anchored at feet px/py-6) covers.
   // Any part of the 24px sprite touching a bridge cell at level L triggers bridge occlusion.
@@ -2244,27 +2233,7 @@ function draw(){
 	  // Se arma toca ponte, renderiza atrás de tudo (antes da oclusão de piso)
 	  if(_weaponOnBridge) _drawWeapon();
 
-	  // 3a) oclusão por piso/escada/sombra (arma e balas ficam na frente disto)
-	  if(!naEscada)
-	  for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
-	    const ci=collInfo(coll[i]);
-	    let cover = false;
-	    if(ci && ci.kind==='piso')   cover = ci.level > player.L;
-	    if(ci && ci.kind==='escada') cover = Math.min(...ci.levels) > player.L;
-	    if(!cover && onSombra && sombra[i]) cover = true;
-	    if(!cover) continue;
-	    for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
-	      if(!L.tiles[i]) continue;
-	      const a=(typeof L.alpha==='number')?L.alpha:1;
-	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
-	      blitMap(L.tiles[i], c*MTILE, r*MTILE);
-	      if(a<1) ctx.restore();
-	      window.__occ++;
-	      break;
-	    }
-	  }
-
-  // 3a.5) armas no chão — na frente dos pisos
+  // armas no chão — na frente dos pisos
   if(IMG.weapons){
     const wNow2 = performance.now()/1000;
     for(const it of gunItems){
@@ -2296,8 +2265,7 @@ function draw(){
     }
   };
 
-  const tNow = performance.now()/1000;
-  // 3a.6) baús — sempre atrás de tudo
+  // baús — sempre atrás de tudo
   if(IMG.tiles){
     for(const b of chests){
       if(b.c<c0-1||b.c>=c1||b.r<r0-1||b.r>=r1) continue;
@@ -2305,54 +2273,35 @@ function draw(){
     }
   }
 
-  // 3b) Arma na mão — na frente dos pisos (se não estiver tocando ponte)
-	  if(!_weaponOnBridge && IMG.players && IMG.weapons) _drawWeapon();
-
-	  // 3c) oclusão por ponte (cobre a arma, balas ficam na frente)
-	  if(!naEscada)
-	  for(let r=r0;r<r1;r++) for(let c=c0;c<c1;c++){ const i=idx(c,r);
-	    const ov=over[i];
-	    let cover = (ov>0 && (ov-1)>=player.L);
-	    if(!cover && onBridge){
-	      const ci=collInfo(coll[i]);
-	      if(ci && ci.kind==='block') cover = blockNearBridge(c, r, player.L);
-	    }
-	    if(!cover) continue;
-	    for(let li=layers.length-1; li>=0; li--){ const L=layers[li];
-	      if(!L.tiles[i]) continue;
-	      const a=(typeof L.alpha==='number')?L.alpha:1;
-	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
-	      blitMap(L.tiles[i], c*MTILE, r*MTILE);
-	      if(a<1) ctx.restore();
-	      window.__occ++;
-	      break;
-	    }
-	  }
-
-	  // 3c.5) oclusão de piso/escada/ponte INDIVIDUAL por inimigo — a regra de cobertura
-	  // (3a/3c acima) só compara contra o nível do PLAYER, então esconde certo pro player
-	  // mas não necessariamente pro bot, que pode estar num nível diferente. Cada bot
-	  // precisa da MESMA regra que o player segue, só que usando o PRÓPRIO nível dele
-	  // como referência (exatamente como se ELE fosse o player naquela posição): se o
-	  // bot mesmo tá "embaixo" de algo (ex.: atravessando uma ponte) → esconde ele ali;
-	  // senão ele fica visível, mesmo que a passada 3a/3c acima já tenha redesenhado
-	  // aquela célula por causa do nível do PLAYER.
+	  // ── Oclusão INDEPENDENTE por entidade (piso/escada/ponte/sombra + o reforço de
+	  // blocos perto de ponte) — cada entidade (player e cada bot) decide sua PRÓPRIA
+	  // visibilidade usando só a PRÓPRIA posição/nível. Nada aqui depende do estado de
+	  // qualquer OUTRA entidade: antes o player tinha um passo GLOBAL à parte (rodava
+	  // pelo mapa inteiro usando só player.L/onBridge/onSombra) que podia esconder ou
+	  // revelar coisas perto de bots sem nenhuma relação — agora todo mundo (player
+	  // incluso) passa pela MESMA função, exatamente como se cada um fosse "o player"
+	  // na própria posição.
 	  //
-	  // IMPORTANTE: isso é calculado em DUAS fases separadas (primeiro decide quem
-	  // esconder e quem mostrar, DEPOIS desenha) — se cada inimigo escondesse/mostrasse
-	  // a si mesmo em um único passo, o "esconder" de um bot (redesenhando o chão) podia
-	  // pintar por cima de OUTRO bot/cadáver vizinho que deveria continuar visível —
-	  // ou seja, a regra de um interferindo no outro. Por isso: todo "esconder" primeiro,
-	  // e só então TODOS os que devem ficar visíveis são redesenhados por cima, por último
-	  // — assim ninguém fica marcado por engano pela oclusão de um vizinho.
+	  // Duas fases (esconder tudo primeiro, só depois desenhar quem fica visível): se
+	  // cada um se escondesse/mostrasse num único passo, o redesenho de chão de um podia
+	  // pintar por cima de OUTRO vizinho que devia continuar visível.
 	  if(IMG.enemies && IMG.players){
+	    // A célula (c,r) cobre alguém no nível L? (piso/escada acima, ponte ativa acima,
+	    // ou sombra decorativa — sombra cobre em qualquer nível, como antes).
 	    const _coveredFor = (c, r, L) => {
 	      const ci = collInfo(collAt(c, r));
 	      if(ci && ci.kind==='piso' && ci.level > L) return true;
 	      if(ci && ci.kind==='escada' && Math.min(...ci.levels) > L) return true;
 	      const ov = overAt(c, r);
 	      if(ov>0 && (ov-1) >= L) return true;
+	      if(sombra[idx(c,r)]) return true;
 	      return false;
+	    };
+	    // Em cima de uma ESCADA nada cobre — mesma exceção pro player e pros bots.
+	    const _isHiddenAt = (c, r, L) => {
+	      const selfCi = collInfo(collAt(c, r));
+	      if(selfCi && selfCi.kind==='escada') return false;
+	      return _coveredFor(c, r, L);
 	    };
 	    // Redesenha a CÉLULA INTEIRA (todas as layers com conteúdo, de baixo pra cima),
 	    // não só a de cima — se a de cima for uma sombra translúcida (comum: sombra fica
@@ -2372,22 +2321,40 @@ function draw(){
 	    // centro (SPR*0.35) e tem seu proprio raio (SPR/2) por cima disso, entao o alcance
 	    // real do que precisa ser coberto e maior que o corpo sozinho. Sem essa folga, a
 	    // arma (e o flash/selo de superaquecimento) ficava sobrando visivel fora da area
-	    // escondida, mesmo com o corpo corretamente coberto por baixo.
+	    // escondida, mesmo com o corpo corretamente coberto por baixo. Vale igual pro
+	    // player — é o mesmo raio, a mesma arma deslocada do centro.
 	    const HIDE_PAD = SPR*1.6;
-	    const hideCells = [], visibleDead = [], visibleAlive = [];
+	    const hideCellsFor = (x, y) => {
+	      const c0e=Math.floor((x-HIDE_PAD)/MTILE), c1e=Math.floor((x+HIDE_PAD)/MTILE);
+	      const r0e=Math.floor((y-6-HIDE_PAD)/MTILE), r1e=Math.floor((y-6+HIDE_PAD)/MTILE);
+	      const cells=[];
+	      for(let r=r0e; r<=r1e; r++) for(let c=c0e; c<=c1e; c++) cells.push([c,r]);
+	      return cells;
+	    };
+	    const hideCells = [];
+	    const playerAnchorC = Math.floor(player.x/MTILE), playerAnchorR = Math.floor(player.y/MTILE);
+	    const playerHidden = _isHiddenAt(playerAnchorC, playerAnchorR, player.L);
+	    if(playerHidden) hideCells.push(...hideCellsFor(player.x, player.y));
+	    const visibleDead = [], visibleAlive = [];
 	    for(const e of enemies){
 	      if(e.st==='dead' && e.deathT>=CORPSE_LIFETIME) continue;   // corpo ja sumiu
 	      const anchorC = Math.floor(e.x/MTILE), anchorR = Math.floor(e.y/MTILE);
-	      const isHidden = _coveredFor(anchorC, anchorR, e.L);
-	      if(isHidden){
-	        const c0e=Math.floor((e.x-HIDE_PAD)/MTILE), c1e=Math.floor((e.x+HIDE_PAD)/MTILE);
-	        const r0e=Math.floor((e.y-6-HIDE_PAD)/MTILE), r1e=Math.floor((e.y-6+HIDE_PAD)/MTILE);
-	        for(let r=r0e; r<=r1e; r++) for(let c=c0e; c<=c1e; c++) hideCells.push([c,r]);
-	      } else {
-	        (e.st==='dead' ? visibleDead : visibleAlive).push(e);
-	      }
+	      const isHidden = _isHiddenAt(anchorC, anchorR, e.L);
+	      if(isHidden) hideCells.push(...hideCellsFor(e.x, e.y));
+	      else (e.st==='dead' ? visibleDead : visibleAlive).push(e);
 	    }
 	    for(const [c,r] of hideCells) _drawTileAt(c,r);
+	    if(!playerHidden){
+	      // O player já foi desenhado bem cedo (antes de toda essa oclusão) — redesenha
+	      // por cima aqui de novo, igual os bots, pra garantir que fica acima de
+	      // qualquer redraw de chão feito acima (senão a arma podia flutuar visível
+	      // mesmo com o corpo escondido por um piso acima, por exemplo).
+	      ctx.save(); ctx.translate(player.x, player.y-6);
+	      if(player.flip) ctx.scale(-1,1);
+	      ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	      ctx.restore();
+	      if(!_weaponOnBridge && IMG.weapons) _drawWeapon();
+	    }
 	    for(const e of visibleDead){
 	      const a = corpseAlpha(e);
 	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
@@ -2395,6 +2362,29 @@ function draw(){
 	      if(a<1) ctx.restore();
 	    }
 	    for(const e of visibleAlive) drawEnemy(e);
+
+	    // ── Blocos (grade/trilho) da ponte na FRENTE de quem estiver pisando NAQUELA
+	    // ponte especificamente — por ENTIDADE (player e cada bot, cada um só revela os
+	    // blocos da PRÓPRIA ponte que está tocando, no PRÓPRIO nível). Local, não um
+	    // flag global só do player — isso é que vazava pra pontes/bots sem relação.
+	    const revealedBlocks = new Set();
+	    const revealBridgeBlocksFor = (ax, ay, L) => {
+	      const half=SPR/2;
+	      const c0b=Math.floor((ax-half)/MTILE), c1b=Math.floor((ax+half-0.001)/MTILE);
+	      const r0b=Math.floor((ay-half)/MTILE), r1b=Math.floor((ay+half-0.001)/MTILE);
+	      for(let r=r0b; r<=r1b; r++) for(let c=c0b; c<=c1b; c++){
+	        if(!bridgeActive(overAt(c,r), L)) continue;
+	        for(let dr=-1; dr<=1; dr++) for(let dc=-1; dc<=1; dc++){
+	          const nc=c+dc, nr=r+dr, key=nc+','+nr;
+	          if(revealedBlocks.has(key)) continue;
+	          const ci=collInfo(collAt(nc,nr));
+	          if(ci && ci.kind==='block'){ revealedBlocks.add(key); _drawTileAt(nc,nr); }
+	        }
+	      }
+	    };
+	    if(!playerHidden) revealBridgeBlocksFor(player.x, player.y-6, player.L);
+	    for(const e of visibleAlive) revealBridgeBlocksFor(e.x, e.y-6, e.L);
+	    for(const e of visibleDead)  revealBridgeBlocksFor(e.x, e.y-6, e.L);
 	  }
 
 
