@@ -2094,6 +2094,67 @@ function drawZoneOnMinimap(cx, cy, z){
   }
 }
 
+// ── Contorno do player quando escondido (sob ponte/piso/sombra) — sem isso o
+// player some por completo e perde a noção de onde está embaixo da ponte.
+// Técnica: silhueta colorida do frame atual (multiply+destination-in, igual
+// zoneArrowSheet), erodida 1px (4 cópias deslocadas em destination-in viram
+// o "AND" das 4 direções) e subtraída da silhueta original — sobra só um
+// anel fino PRA DENTRO do contorno real, sem inchar o personagem.
+const _plyOutlineSil = {};
+function playerSilhouette(frame, skin){
+  const key = frame+','+skin;
+  let c = _plyOutlineSil[key];
+  if(!c){
+    c = document.createElement('canvas'); c.width=SPR; c.height=SPR;
+    const g = c.getContext('2d'); g.imageSmoothingEnabled=false;
+    // desenhado um pouco menor que o sprite real (0.78x, centralizado) — contorno
+    // no tamanho cheio do corpo lia como "personagem gordo/inchado".
+    const sc=0.78, sw=SPR*sc, sh=SPR*sc, ox=(SPR-sw)/2, oy=(SPR-sh)/2;
+    g.drawImage(IMG.players, frame*SPR, skin*SPR, SPR, SPR, ox, oy, sw, sh);
+    g.globalCompositeOperation='source-in';
+    g.fillStyle='#fff6cc';
+    g.fillRect(0, 0, SPR, SPR);
+    _plyOutlineSil[key] = c;
+  }
+  return c;
+}
+const _plyOutlineScratch = document.createElement('canvas');
+_plyOutlineScratch.width = SPR; _plyOutlineScratch.height = SPR;
+const _plyOutlineCtx = _plyOutlineScratch.getContext('2d');
+_plyOutlineCtx.imageSmoothingEnabled = false;
+const _plyEroded = document.createElement('canvas');
+_plyEroded.width = SPR; _plyEroded.height = SPR;
+const _plyErodedCtx = _plyEroded.getContext('2d');
+_plyErodedCtx.imageSmoothingEnabled = false;
+function playerOutlineImg(frame, skin){
+  const sil = playerSilhouette(frame, skin);
+  const gc = _plyErodedCtx;
+  gc.clearRect(0, 0, SPR, SPR);
+  gc.globalCompositeOperation = 'source-over';
+  gc.drawImage(sil, 0, 0);
+  gc.globalCompositeOperation = 'destination-in';
+  for(const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]) gc.drawImage(sil, dx, dy);
+  gc.globalCompositeOperation = 'source-over';
+
+  const g = _plyOutlineCtx;
+  g.clearRect(0, 0, SPR, SPR);
+  g.drawImage(sil, 0, 0);
+  g.globalCompositeOperation = 'destination-out';
+  g.drawImage(_plyEroded, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  return _plyOutlineScratch;
+}
+function drawPlayerOutline(px, py, flip){
+  if(!IMG.players) return;
+  const img = playerOutlineImg(player.frame, player.skin);
+  ctx.save();
+  ctx.translate(px, py-6);
+  if(flip) ctx.scale(-1,1);
+  ctx.globalAlpha = 0.65;
+  ctx.drawImage(img, -img.width/2, -img.height/2);
+  ctx.restore();
+}
+
 //======================= RENDER =======================
 let cam={x:0,y:0};
 function draw(){
@@ -2354,6 +2415,10 @@ function draw(){
 	      ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	      ctx.restore();
 	      if(!_weaponOnBridge && IMG.weapons) _drawWeapon();
+	    } else {
+	      // Escondido (ponte/piso acima/sombra): sem o sprite cheio, só um
+	      // contorno por cima do chão redesenhado, pra saber onde está.
+	      drawPlayerOutline(player.x, player.y, player.flip);
 	    }
 	    for(const e of visibleDead){
 	      const a = corpseAlpha(e);
