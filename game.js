@@ -207,7 +207,7 @@ function canStep(fromVal,L,toVal,toOver){
 }
 
 //======================= PLAYER =======================
-const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100, armor:50,
+const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100, armor:100,
   heading:-Math.PI/2, headingS:-Math.PI/2 };   // direção de MOVIMENTO (alvo + suavizada) — bússola/minimapa
 const keys={};
 addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true;
@@ -341,6 +341,7 @@ function step(dt){
   for(const e of enemies){
     e.flashT = Math.max(0, e.flashT - dt);
     e.muzzleFlashT = Math.max(0, (e.muzzleFlashT||0) - dt);
+    if(e.st==='dead'){ e.deathT = (e.deathT||0) + dt; continue; }   // corpo some depois de CORPSE_LIFETIME
     if(e.st!=='alive') continue;                       // corpo morto não pensa nem colide
     // Recarga do escudo — igual ao do player: 5s sem tomar dano, depois regenera 10/s
     if(e.armor < e.maxArmor){
@@ -348,6 +349,28 @@ function step(dt){
       if(e.shieldRechargeTimer >= 5) e.armor = Math.min(e.maxArmor, e.armor + dt*10);
     } else {
       e.shieldRechargeTimer = 0;
+    }
+    // Superaquecimento da arma — mesma regra do player: esfria sozinho, mais rápido
+    // depois de travar (gunOverheat), até liberar de novo em 30% de calor.
+    e.gunHeat = Math.max(0, (e.gunHeat||0) - dt*(e.gunOverheat ? 0.30 : 0.20));
+    if(e.gunOverheat && e.gunHeat <= 0.30) e.gunOverheat = false;
+    e.overheatFlash = Math.max(0, (e.overheatFlash||0) - dt);
+    // Dano da zona/tempestade — mesma regra do player, só que cada bot tem seu próprio
+    // timer (não existia antes: bot nunca sofria dano da zona, então nunca tinha motivo
+    // de verdade pra fugir dela).
+    if(zoneCurrent && zoneState!=='idle'){
+      const distZ = Math.hypot(e.x-zoneCurrent.cx, e.y-zoneCurrent.cy);
+      if(zoneCurrent.r<=0 || distZ>zoneCurrent.r){
+        e.zoneDmgTimer = (e.zoneDmgTimer||0) + dt;
+        if(e.zoneDmgTimer >= ZONE_DMG_TICK){
+          e.zoneDmgTimer -= ZONE_DMG_TICK;
+          const dmgZ = zoneNum < 5 ? 1 : 1 + (zoneNum-4);
+          damageEnemy(e, dmgZ, e.x, e.y-6, null);
+          if(e.st!=='alive') continue;
+        }
+      } else {
+        e.zoneDmgTimer = 0;
+      }
     }
     e.moving = false;
     updateBotAI(e, dt);
@@ -411,7 +434,8 @@ function step(dt){
       if(inRange){
         b.t+=dt;
         if(b.t>=CHEST_CHARGE[b.v]){
-          b.st='open'; b.t=0; b.chargedBy=null; chestSound();
+          b.st='open'; b.t=0; b.chargedBy=null;
+          chestSound(cb===player ? 1 : gunshotAtten(bx, by));
           scatterChestLoot(b);
         }
       } else {
@@ -502,13 +526,27 @@ function step(dt){
 
 // Synth gunshot sound — layered for a punchy pixel-art feel (Web Audio, no files)
 let audioCtx=null;
-function gunSound(s){
+// Alcance de audição de tiro alheio (~50 "metros" = 50 tiles) e o quanto mais abafado
+// um tiro de outro personagem soa em relação ao seu próprio (sempre no volume cheio).
+const AUDIO_HEARING_RANGE = MTILE*30;
+const OTHER_GUNSHOT_VOLUME = 0.3;
+function gunshotAtten(sx, sy){
+  // Fator de volume (0..1) de um tiro disparado em (sx,sy), do ponto de vista do player.
+  const d = Math.hypot(sx-player.x, sy-player.y);
+  if(d >= AUDIO_HEARING_RANGE) return 0;
+  const k = 1 - d/AUDIO_HEARING_RANGE;
+  return k*k * OTHER_GUNSHOT_VOLUME;   // queda quadrática — já fica abafado bem antes do limite
+}
+function gunSound(s, atten=1){
   // s = perfil da arma: {vol, body, f1, f2, sub} — cada arma soa diferente
+  // atten = fator de volume (0..1) — 1 pro seu próprio tiro, menor (por distância) pros outros
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
+  const vol=s.vol*atten, sub=s.sub*atten;
   // ── Sharp attack click (firing pin) ──
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(2400,t); clk.frequency.exponentialRampToValueAtTime(600,t+0.01);
-  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(s.vol*0.9,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
+  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(vol*0.9,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
   clk.connect(cg); cg.connect(audioCtx.destination);
   clk.start(t); clk.stop(t+0.015);
   // ── Noise body (the "bang") ──
@@ -516,14 +554,14 @@ function gunSound(s){
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.12));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
-  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(s.vol,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(vol,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(s.f1,t); bp.frequency.exponentialRampToValueAtTime(s.f2,t+len);
   bp.Q.setValueAtTime(1.2,t);
   src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
   // ── Sub punch ──
   const osc=audioCtx.createOscillator(); osc.type='sine'; osc.frequency.setValueAtTime(90,t); osc.frequency.exponentialRampToValueAtTime(25,t+0.05);
-  const og=audioCtx.createGain(); og.gain.setValueAtTime(s.sub,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+  const og=audioCtx.createGain(); og.gain.setValueAtTime(sub,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
   osc.connect(og); og.connect(audioCtx.destination);
   osc.start(t); osc.stop(t+0.05);
 }
@@ -539,12 +577,13 @@ function footstepSound(){
   src.connect(lp); lp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
 }
-function pickupSound(){
+function pickupSound(atten=1){
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   // Click metálico (armar)
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(800,t); clk.frequency.exponentialRampToValueAtTime(200,t+0.04);
-  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.05,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+  const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.05*atten,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.05);
   clk.connect(cg); cg.connect(audioCtx.destination);
   clk.start(t); clk.stop(t+0.05);
   // Ruído mecânico (corrediça)
@@ -552,19 +591,20 @@ function pickupSound(){
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.1));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
-  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.04,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.04*atten,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.setValueAtTime(2000,t);
   src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
 }
-function chestSound(){
+function chestSound(atten=1){
   // chime subindo + pop — sinal de loot
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   [[520,0],[780,0.07],[1040,0.14]].forEach(([f,d])=>{
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
     const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
-    g.gain.exponentialRampToValueAtTime(0.09,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.18);
+    g.gain.exponentialRampToValueAtTime(0.09*atten,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.18);
     o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.2);
   });
 }
@@ -586,35 +626,37 @@ function overheatSound(){
   const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
   o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
 }
-function enemyHitSound(){
+function enemyHitSound(atten=1){
   // thud curto e grave — bala acertou carne
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='square';
   o.frequency.setValueAtTime(340,t); o.frequency.exponentialRampToValueAtTime(120,t+0.07);
-  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.07,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.07*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
   o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.08);
 }
-function enemyDieSound(){
+function enemyDieSound(atten=1){
   // tom descendo (desinflando) + ruído de baque + thump grave (peso extra no impacto)
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='triangle';
   o.frequency.setValueAtTime(520,t); o.frequency.exponentialRampToValueAtTime(60,t+0.28);
-  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.10,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.30);
+  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.10*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.30);
   o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.30);
   const len=0.12, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.2));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
-  const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.08,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.08*atten,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
   const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(500,t);
   src.connect(lp); lp.connect(ng); ng.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
   // Thump grave — dá peso ao golpe fatal (mesma ideia do "sub punch" do tiro)
   const sub=audioCtx.createOscillator(); sub.type='sine';
   sub.frequency.setValueAtTime(115,t); sub.frequency.exponentialRampToValueAtTime(28,t+0.16);
-  const subg=audioCtx.createGain(); subg.gain.setValueAtTime(0.16,t); subg.gain.exponentialRampToValueAtTime(0.001,t+0.16);
+  const subg=audioCtx.createGain(); subg.gain.setValueAtTime(0.16*atten,t); subg.gain.exponentialRampToValueAtTime(0.001,t+0.16);
   sub.connect(subg); subg.connect(audioCtx.destination); sub.start(t); sub.stop(t+0.16);
 }
 function killCollectSound(){
@@ -633,20 +675,21 @@ function killCollectSound(){
   g2.gain.exponentialRampToValueAtTime(0.035,t+0.03); g2.gain.exponentialRampToValueAtTime(0.001,t+0.2);
   o2.connect(g2); g2.connect(audioCtx.destination); o2.start(t+0.02); o2.stop(t+0.22);
 }
-function enemyShieldBreakSound(){
+function enemyShieldBreakSound(atten=1){
   // Escudo quebrando: zap elétrico descendo + estouro de vidro + tinidos agudos dos cacos
+  if(atten<=0) return;
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='sawtooth';
   o.frequency.setValueAtTime(1400,t); o.frequency.exponentialRampToValueAtTime(180,t+0.22);
-  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.08,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.24);
+  const g=audioCtx.createGain(); g.gain.setValueAtTime(0.08*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.24);
   const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.setValueAtTime(400,t);
   o.connect(hp); hp.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.24);
   const len=0.18, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.3));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
-  const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.11,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
+  const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.11*atten,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
   const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(3200,t); bp.Q.setValueAtTime(0.8,t);
   src.connect(bp); bp.connect(ng); ng.connect(audioCtx.destination);
   src.start(t); src.stop(t+len);
@@ -654,7 +697,7 @@ function enemyShieldBreakSound(){
     const d2=0.02+i*0.03;
     const o2=audioCtx.createOscillator(); o2.type='sine'; o2.frequency.setValueAtTime(f,t+d2);
     const g2=audioCtx.createGain(); g2.gain.setValueAtTime(0.0001,t+d2);
-    g2.gain.exponentialRampToValueAtTime(0.05,t+d2+0.008); g2.gain.exponentialRampToValueAtTime(0.001,t+d2+0.09);
+    g2.gain.exponentialRampToValueAtTime(0.05*atten,t+d2+0.008); g2.gain.exponentialRampToValueAtTime(0.001,t+d2+0.09);
     o2.connect(g2); g2.connect(audioCtx.destination); o2.start(t+d2); o2.stop(t+d2+0.1);
   });
 }
@@ -875,7 +918,15 @@ function collectSpawnPoints(total){
 // perseguem/fogem/procuram loot e baús, e atiram de volta — ver seção "IA DOS BOTS".
 const ENEMY_ROW   = 3;              // linha do sprite na folha enemies (boneco azul)
 const ENEMY_DEAD  = 3;              // último frame da linha = morto
-const GUN_DMG = { pistola:12, magnum:30, uzi:7, sniper:65, carabina:13, fuzil:15, smg:6, escopeta:8 };
+const CORPSE_LIFETIME = 3;          // corpo some do mapa 3s depois de morrer
+const CORPSE_FADE_DUR = 1;          // últimos 1s desse tempo: desvanece em vez de sumir de repente
+function corpseAlpha(e){            // 1 (opaco) até começar a desvanecer, depois cai linear até 0
+  const left = CORPSE_LIFETIME - e.deathT;
+  return left >= CORPSE_FADE_DUR ? 1 : Math.max(0, left/CORPSE_FADE_DUR);
+}
+// Pistola = 2 de dano (baseline) — resto reescalado nas MESMAS proporções (×0.4 em
+// cima da leva anterior, que já tinha as outras com vantagem clara sobre a pistola).
+const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:16, carabina:4, fuzil:5, smg:3, escopeta:3 };
 // Tier de qualidade das armas (pra IA decidir "isso é upgrade?") — não é DPS bruto:
 // automáticas de cadência alta são limitadas pelo superaquecimento, e armas de tiro
 // único (sniper) valem mais que a conta crua sugere, então o ranking é curado.
@@ -899,10 +950,10 @@ function spawnEnemies(){
       st:'alive', flashT:0,
       // ── combate/visual ──
       gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
-      animT:Math.random()*10, frame:0, overlapGunIdx:-1,
+      animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0,
       // ── IA ──
       fsm:'EXPLORE', decisionTimer:Math.random()*0.3, target:null, lastKnownTargetPos:null,
-      lootGoal:null,
+      lootGoal:null, lootPriority: Math.random() < 0.3,
       path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
       wanderTarget:null,
     });
@@ -914,6 +965,10 @@ function damageEnemy(e, dmg, hx, hy, owner){
   e.flashT = 0.12;
   const px = hx ?? e.x, py = (hy ?? e.y-6) - 6;
   const byPlayer = owner === 'player';
+  // Som de acerto/morte de OUTRO combatente também abafa com a distância, igual o
+  // tiro — senão toda porrada em qualquer canto do mapa (bot vs bot longe de você)
+  // chega no seu ouvido no volume cheio.
+  const atten = gunshotAtten(e.x, e.y);
   // Escudo absorve primeiro (1:1, igual a maioria dos BR) — resto vaza pra vida
   let toArmor = 0, toHp = dmg;
   if(e.armor > 0){
@@ -921,21 +976,21 @@ function damageEnemy(e, dmg, hx, hy, owner){
     e.armor -= toArmor; toHp = dmg - toArmor;
     e.shieldRechargeTimer = 0;
     spawnDmgPop(px, py, toArmor, false, true);      // número azul — dano no escudo
-    if(e.armor <= 0){ spawnShieldBreak(e.x, e.y-6); enemyShieldBreakSound(); }
+    if(e.armor <= 0){ spawnShieldBreak(e.x, e.y-6); enemyShieldBreakSound(atten); }
   }
-  if(toHp <= 0){ enemyHitSound(); return; }           // escudo absorveu tudo — sem dano na vida
+  if(toHp <= 0){ enemyHitSound(atten); return; }      // escudo absorveu tudo — sem dano na vida
   e.hp -= toHp;
   const kill = e.hp <= 0;
   spawnDmgPop(px, py - (toArmor>0?10:0), toHp, kill); // se veio dano de escudo antes, empilha o número da vida acima
   if(kill){
-    e.hp = 0; e.st='dead';
-    enemyDieSound();
+    e.hp = 0; e.st='dead'; e.deathT = 0;
+    enemyDieSound(atten);
     spawnDeathPop(e.x, e.y-6);
     if(byPlayer){                                      // abate só conta no contador do PLAYER
       kills++; killCollectSound(); killPulseT = 0; killBurstT = 0;
       shakePhase = Math.max(shakePhase, 0.4);
     }
-  } else enemyHitSound();
+  } else enemyHitSound(atten);
 }
 
 //======================= IA DOS BOTS =======================
@@ -1036,6 +1091,14 @@ function updateBotPathing(e, dt){
     const sc=Math.floor(e.x/MTILE), sr=Math.floor(e.y/MTILE);
     e.path = findPath(sc, sr, e.L, e.pathGoal.c, e.pathGoal.r);
     e.pathIndex = 0; e.repathTimer = 1.5+Math.random(); e.stuckTimer = 0;
+    // Meta inalcançável (path vazio) duas vezes seguidas — abandona em vez de ficar
+    // tentando a mesma rota impossível pra sempre (é isso que trava o bot num lugar só).
+    if(e.path.length===0){
+      e.pathFailCount = (e.pathFailCount||0) + 1;
+      if(e.pathFailCount >= 2){ e.pathGoal=null; e.pathFailCount=0; e.wanderTarget=null; e.lootGoal=null; }
+    } else {
+      e.pathFailCount = 0;
+    }
   }
 }
 // Anda em direção ao próximo waypoint do path atual (mesmo mover por eixo do player).
@@ -1105,6 +1168,15 @@ function findBestLootGoal(e){
   return best;
 }
 // Alvo de "vagar" — tenta ficar dentro da zona segura atual (consciência de tempestade)
+// Puxa um ponto de volta pra dentro da zona segura se ele cair fora dela — usado pra
+// fugir de um inimigo sem por acaso fugir pra dentro da tempestade também.
+function clampToZone(x, y){
+  if(!zoneCurrent || zoneState==='idle' || zoneCurrent.r<=0) return {x, y};
+  const dx=x-zoneCurrent.cx, dy=y-zoneCurrent.cy, d=Math.hypot(dx,dy);
+  if(d <= zoneCurrent.r*0.9) return {x, y};
+  const k = (zoneCurrent.r*0.85)/d;
+  return { x: zoneCurrent.cx+dx*k, y: zoneCurrent.cy+dy*k };
+}
 function pickWanderTarget(e){
   for(let tries=0; tries<12; tries++){
     let tc, tr;
@@ -1121,7 +1193,7 @@ function pickWanderTarget(e){
   return {c:Math.floor(e.x/MTILE), r:Math.floor(e.y/MTILE)};
 }
 
-// ── Máquina de estados: FLEE > ENGAGE > SEEK_LOOT > EXPLORE ──
+// ── Máquina de estados: FLEE > AVOID_ZONE > ENGAGE > SEEK_LOOT > EXPLORE ──
 function decideBotFSM(e, dt){
   // Corte de fuga por vida baixa roda TODO frame (é só uma conta), não preso ao timer
   // throttled abaixo — senão o bot podia soltar mais uma rajada já abaixo do limiar,
@@ -1139,7 +1211,24 @@ function decideBotFSM(e, dt){
   e.target = target;
 
   if(e.fsm === 'FLEE') return;   // mantém fugindo até recuperar HP, mesmo sem alvo visível
-  if(target) e.fsm = 'ENGAGE';
+
+  // Fora da zona segura: prioridade alta (leva dano de verdade agora, igual o player) —
+  // mas não é uma fuga cega que ignora tudo, ainda atira se um alvo aparecer no caminho
+  // de volta (ver updateBotAI).
+  const outsideZone = zoneCurrent && zoneState!=='idle' &&
+    (zoneCurrent.r<=0 || Math.hypot(e.x-zoneCurrent.cx, e.y-zoneCurrent.cy) > zoneCurrent.r);
+  if(outsideZone){ e.fsm = 'AVOID_ZONE'; return; }
+
+  if(target){
+    // Alguns bots (personalidade "gananciosa", sorteada no spawn) preferem upar de
+    // arma antes de trocar tiro — se ainda tão com a inicial e tem upgrade ou baú
+    // alcançável por perto, vão atrás disso em vez de engajar na hora.
+    if(e.lootPriority && WEAPON_TIER[e.gun]<=1){
+      const loot = findBestLootGoal(e);
+      if(loot){ e.lootGoal = loot; e.fsm = 'SEEK_LOOT'; return; }
+    }
+    e.fsm = 'ENGAGE';
+  }
   else if(e.lastKnownTargetPos && elapsedT - e.lastKnownTargetPos.t < AI_MEMORY_TIME) e.fsm = 'ENGAGE';
   else {
     const loot = findBestLootGoal(e);
@@ -1152,6 +1241,7 @@ function botTryFire(e, dt, target){
   // perfeita instantânea assim que enxerga alguém, o que fica com cara de aimbot.
   if(e.aimTarget !== target){ e.aimTarget = target; e.aimReadyT = AI_REACT_MIN + Math.random()*(AI_REACT_MAX-AI_REACT_MIN); }
   if(e.aimReadyT > 0){ e.aimReadyT -= dt; return; }
+  if(e.gunOverheat) return;   // arma travada esfriando — mesma trava do player
 
   e.fireCooldown = Math.max(0, e.fireCooldown - dt);
   if(e.fireCooldown > 0) return;
@@ -1162,9 +1252,27 @@ function botTryFire(e, dt, target){
   const humanError = (Math.random()*2-1) * AI_AIM_ERROR;
   const angle = Math.atan2((target.y-6)-(e.y-6), target.x-e.x) + humanError;
   const aimDist = Math.max(MTILE*2, Math.hypot(target.x-e.x, (target.y-6)-(e.y-6)));
-  gunSound(w.snd);
+  gunSound(w.snd, gunshotAtten(e.x, e.y));   // abafado com a distância — só ~50 tiles de alcance
   fireBullet(e.x, e.y-6, e.L, e.gun, angle, aimDist, e);
   e.muzzleFlashT = 0.05;
+  // Esquenta igual ao player: rajada contínua estoura a arma em ~4s (escala com a cadência)
+  e.gunHeat = (e.gunHeat||0) + clamp(w.rate*0.45, 0.03, 0.55);
+  if(e.gunHeat >= 1){ e.gunHeat = 1; e.gunOverheat = true; e.overheatFlash = 1.6; }
+}
+// Orbita ao redor de um alvo (perpendicular à linha bot→alvo), trocando de lado de vez
+// em quando ou se bater em algo — usado sempre que o bot precisa continuar se
+// movendo durante o combate em vez de travar parado (dentro do alcance, ou esperando
+// a arma esfriar longe do alvo).
+function botStrafe(e, t, dt){
+  e.strafeTimer = (e.strafeTimer||0) - dt;
+  if(e.strafeTimer <= 0){ e.strafeDir = Math.random()<0.5 ? 1 : -1; e.strafeTimer = 1.2 + Math.random()*1.8; }
+  const dx=t.x-e.x, dy=t.y-e.y, dd=Math.hypot(dx,dy)||1;
+  const px=-dy/dd, py=dx/dd;
+  const s = AI_BOT_SPEED*dt*e.strafeDir;
+  const okX = moveEntityAxis(e, e.x+px*s, e.y, true);
+  const okY = moveEntityAxis(e, e.x, e.y+py*s, false);
+  e.moving = true; e.flip = dx<0;
+  if(!okX && !okY) e.strafeTimer = 0;   // bateu em algo — troca de lado no próximo tick
 }
 function updateBotAI(e, dt){
   decideBotFSM(e, dt);
@@ -1173,10 +1281,36 @@ function updateBotAI(e, dt){
     const threat = e.target || e.lastKnownTargetPos;
     if(threat){
       const dx=e.x-threat.x, dy=e.y-threat.y, d=Math.hypot(dx,dy)||1;
-      const gx = clamp(e.x + dx/d*MTILE*8, 0, WORLD_W-1), gy = clamp(e.y + dy/d*MTILE*8, 0, WORLD_H-1);
+      // Foge do ameaçador, mas sem por acaso fugir pra dentro da tempestade — puxa de
+      // volta pra zona segura se a direção "pra longe do inimigo" apontar pra fora dela.
+      const raw = clampToZone(e.x + dx/d*MTILE*8, e.y + dy/d*MTILE*8);
+      const gx = clamp(raw.x, 0, WORLD_W-1), gy = clamp(raw.y, 0, WORLD_H-1);
       setBotGoal(e, Math.floor(gx/MTILE), Math.floor(gy/MTILE));
     }
     updateBotPathing(e, dt); followPath(e, dt);
+    // Atira de volta enquanto foge, se ainda enxergar o ameaçador — mira nele, não na
+    // direção que tá correndo (followPath vira a mira pro rumo do movimento, então
+    // sobrescreve aqui por último).
+    if(e.target){
+      e.aimAngle = Math.atan2((e.target.y-6)-(e.y-6), e.target.x-e.x);
+      botTryFire(e, dt, e.target);
+    }
+    return;
+  }
+  if(e.fsm === 'AVOID_ZONE'){
+    // Fora da zona: corre pra um ponto aleatório bem dentro da área segura atual (não
+    // sempre o centro cravado, senão os 49 bots convergem todos pro mesmo pixel) — mas
+    // continua atirando se um alvo aparecer no caminho, não é uma fuga cega.
+    if(zoneCurrent && zoneCurrent.r>0){
+      if(!e.zoneGoal || Math.hypot(e.zoneGoal.x-e.x, e.zoneGoal.y-e.y) < MTILE*2){
+        const ang=Math.random()*6.28, rad=Math.random()*zoneCurrent.r*0.6;
+        e.zoneGoal = { x: zoneCurrent.cx+Math.cos(ang)*rad, y: zoneCurrent.cy+Math.sin(ang)*rad };
+      }
+      setBotGoal(e, Math.floor(e.zoneGoal.x/MTILE), Math.floor(e.zoneGoal.y/MTILE));
+    }
+    updateBotPathing(e, dt); followPath(e, dt);
+    const t = e.target;
+    if(t){ e.aimAngle = Math.atan2((t.y-6)-(e.y-6), t.x-e.x); botTryFire(e, dt, t); }
     return;
   }
   if(e.fsm === 'ENGAGE'){
@@ -1184,10 +1318,25 @@ function updateBotAI(e, dt){
     if(aimAt) e.aimAngle = Math.atan2((aimAt.y-6)-(e.y-6), aimAt.x-e.x);
     if(t){
       const d = Math.hypot(t.x-e.x, t.y-e.y);
-      if(d > AI_ENGAGE_STOP_DIST){
+      if(e.gunOverheat){
+        // Arma travada esfriando — recua um pouco em vez de ficar parado exposto perto
+        // do alvo (só quando já tava perto; longe não faz sentido recuar mais ainda,
+        // mas mesmo longe continua orbitando em vez de travar parado esperando esfriar).
+        if(d < AI_ENGAGE_STOP_DIST*1.5){
+          const dx=e.x-t.x, dy=e.y-t.y, dd=Math.hypot(dx,dy)||1;
+          const gx = clamp(e.x + dx/dd*MTILE*3, 0, WORLD_W-1), gy = clamp(e.y + dy/dd*MTILE*3, 0, WORLD_H-1);
+          setBotGoal(e, Math.floor(gx/MTILE), Math.floor(gy/MTILE));
+          updateBotPathing(e, dt); followPath(e, dt);
+        } else { e.path=[]; e.pathGoal=null; botStrafe(e, t, dt); }
+      } else if(d > AI_ENGAGE_STOP_DIST){
         setBotGoal(e, Math.floor(t.x/MTILE), Math.floor(t.y/MTILE));
         updateBotPathing(e, dt); followPath(e, dt);
-      } else { e.path=[]; e.pathGoal=null; e.moving=false; }
+      } else {
+        // Dentro do alcance de tiro — não trava parado: orbita/strafe ao redor do alvo
+        // enquanto atira, trocando de lado de vez em quando (ou se bater em algo).
+        e.path=[]; e.pathGoal=null;
+        botStrafe(e, t, dt);
+      }
       botTryFire(e, dt, t);
     } else if(e.lastKnownTargetPos){
       setBotGoal(e, Math.floor(e.lastKnownTargetPos.x/MTILE), Math.floor(e.lastKnownTargetPos.y/MTILE));
@@ -1219,7 +1368,7 @@ function botCheckGunPickup(e){
   if(cur!==-1 && cur!==e.overlapGunIdx && isUpgrade(e, gunItems[cur].t)){
     const it=gunItems[cur], old=e.gun;
     e.gun=it.t; it.t=old; e.fireCooldown=0;
-    pickupSound();
+    pickupSound(gunshotAtten(e.x, e.y));
   }
   e.overlapGunIdx = cur;
 }
@@ -1503,7 +1652,7 @@ function drawEnemy(e){
   }
 }
 // Arma do bot: mesma matemática de posição/rotação do player, versão simplificada
-// (sem bounce de troca nem brilho de calor — não tem superaquecimento modelado pro bot).
+// (sem bounce de troca na animação — mas tem o mesmo superaquecimento/brilho do player).
 function drawBotWeapon(e){
   if(!IMG.weapons) return;
   const wDef = WEAPONS[e.gun];
@@ -1514,6 +1663,16 @@ function drawBotWeapon(e){
   ctx.rotate(e.aimAngle);
   if(Math.abs(e.aimAngle) > Math.PI/2) ctx.scale(1,-1);
   ctx.drawImage(IMG.weapons, wDef.spr*SPR, 0, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+  // Cano incandescente conforme esquenta — mesmo efeito visual do player
+  if(e.gunHeat > 0.35){
+    const gh=(e.gunHeat-0.35)/0.65, fl=0.75+0.25*Math.sin(performance.now()/40);
+    ctx.globalCompositeOperation='lighter';
+    const gg=ctx.createRadialGradient(SPR*0.30,0,0, SPR*0.30,0,7);
+    gg.addColorStop(0,'rgba(255,120,40,'+(0.55*gh*fl).toFixed(3)+')');
+    gg.addColorStop(1,'rgba(255,60,20,0)');
+    ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(SPR*0.30,0,7,0,6.28); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+  }
   ctx.restore();
   if(e.muzzleFlashT > 0){
     const fs = wDef.flash * 6;
@@ -1526,6 +1685,29 @@ function drawBotWeapon(e){
     ctx.fillStyle='#fff6d8';
     ctx.beginPath(); ctx.arc(fs*0.25,0,fs*0.32,0,6.28); ctx.fill();
     ctx.restore(); ctx.globalAlpha=1;
+  }
+  // Badge de superaquecimento flutuando na arma — mesmo ícone do player
+  if(e.gunOverheat || e.overheatFlash>0){
+    const Tb = performance.now()/1000;
+    const k = e.overheatFlash/1.6;
+    const pop = e.overheatFlash>0 ? 1+Math.sin((1-k)*Math.PI)*0.35 : 1;
+    ctx.save();
+    ctx.translate(wx, wy - 13 + Math.sin(Tb*3)*1.2);
+    ctx.scale(pop, pop);
+    if(e.overheatFlash>0) ctx.rotate(Math.sin(Tb*14)*0.10);
+    ctx.globalAlpha = e.gunOverheat ? 1 : Math.min(1, k*3);
+    if(e.gunOverheat){
+      ctx.strokeStyle='rgba(255,90,42,'+(0.6+0.4*Math.sin(Tb*8)).toFixed(3)+')';
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(0,0,6.8+Math.sin(Tb*8)*0.8,0,6.28); ctx.stroke();
+    }
+    ctx.fillStyle='#d92c1f';
+    ctx.beginPath(); ctx.arc(0,0,5.5,0,6.28); ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.arc(0,0,5.5,0,6.28); ctx.stroke();
+    tinyFlame(0, 0.6, 2.8, '#fff', Math.sin(Tb*20));
+    ctx.restore();
+    ctx.globalAlpha=1;
   }
 }
 
@@ -1881,9 +2063,15 @@ function draw(){
     }
   }
 
-  // 1.95) inimigos — mortos primeiro (corpo no chão), vivos por cima
+  // 1.95) inimigos — mortos primeiro (corpo no chão, desvanece e some depois de
+  // CORPSE_LIFETIME), vivos por cima
   if(IMG.enemies){
-    for(const e of enemies) if(e.st==='dead')  drawEnemy(e);
+    for(const e of enemies) if(e.st==='dead' && e.deathT<CORPSE_LIFETIME){
+      const a = corpseAlpha(e);
+      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
+      drawEnemy(e);
+      if(a<1) ctx.restore();
+    }
     for(const e of enemies) if(e.st!=='dead')  drawEnemy(e);
   }
 
@@ -2041,29 +2229,72 @@ function draw(){
 	    }
 	  }
 
-	  // 3c.5) redesenha inimigos que a oclusão de piso/escada/ponte escondeu —
-	  // sem isso, um bot num andar/ponte acima do player some (ou fica cortado, perto
-	  // de escadas onde células vizinhas do MESMO sprite têm nível diferente) atrás do
-	  // chão redesenhado. Confere TODAS as células que o sprite (maior que 1 tile) toca,
-	  // não só a célula central — senão a metade que cai numa célula vizinha coberta
-	  // fica cortada mesmo com a célula central liberada.
+	  // 3c.5) oclusão de piso/escada/ponte INDIVIDUAL por inimigo — a regra de cobertura
+	  // (3a/3c acima) só compara contra o nível do PLAYER, então esconde certo pro player
+	  // mas não necessariamente pro bot, que pode estar num nível diferente. Cada bot
+	  // precisa da MESMA regra que o player segue, só que usando o PRÓPRIO nível dele
+	  // como referência (exatamente como se ELE fosse o player naquela posição): se o
+	  // bot mesmo tá "embaixo" de algo (ex.: atravessando uma ponte) → esconde ele ali;
+	  // senão ele fica visível, mesmo que a passada 3a/3c acima já tenha redesenhado
+	  // aquela célula por causa do nível do PLAYER.
+	  //
+	  // IMPORTANTE: isso é calculado em DUAS fases separadas (primeiro decide quem
+	  // esconder e quem mostrar, DEPOIS desenha) — se cada inimigo escondesse/mostrasse
+	  // a si mesmo em um único passo, o "esconder" de um bot (redesenhando o chão) podia
+	  // pintar por cima de OUTRO bot/cadáver vizinho que deveria continuar visível —
+	  // ou seja, a regra de um interferindo no outro. Por isso: todo "esconder" primeiro,
+	  // e só então TODOS os que devem ficar visíveis são redesenhados por cima, por último
+	  // — assim ninguém fica marcado por engano pela oclusão de um vizinho.
 	  if(IMG.enemies){
-	    const _cellCovered = (c, r) => {
+	    const _coveredFor = (c, r, L) => {
 	      const ci = collInfo(collAt(c, r));
-	      if(ci && ci.kind==='piso' && ci.level > player.L) return true;
-	      if(ci && ci.kind==='escada' && Math.min(...ci.levels) > player.L) return true;
+	      if(ci && ci.kind==='piso' && ci.level > L) return true;
+	      if(ci && ci.kind==='escada' && Math.min(...ci.levels) > L) return true;
 	      const ov = overAt(c, r);
-	      if(ov>0 && (ov-1)>=player.L) return true;
+	      if(ov>0 && (ov-1) >= L) return true;
 	      return false;
 	    };
-	    const _enemyCovered = (e) => {
-	      const c0e=Math.floor((e.x-SPR/2)/MTILE), c1e=Math.floor((e.x+SPR/2)/MTILE);
-	      const r0e=Math.floor((e.y-6-SPR/2)/MTILE), r1e=Math.floor((e.y-6+SPR/2)/MTILE);
-	      for(let r=r0e; r<=r1e; r++) for(let c=c0e; c<=c1e; c++) if(_cellCovered(c,r)) return true;
-	      return false;
+	    // Redesenha a CÉLULA INTEIRA (todas as layers com conteúdo, de baixo pra cima),
+	    // não só a de cima — se a de cima for uma sombra translúcida (comum: sombra fica
+	    // por cima do andar na pilha de layers), redesenhar só ela deixava o sprite por
+	    // baixo ainda parcialmente visível através da transparência da sombra.
+	    const _drawTileAt = (c, r) => {
+	      const i = idx(c,r);
+	      for(let li=0; li<layers.length; li++){ const L=layers[li];
+	        if(!L.tiles[i]) continue;
+	        const a=(typeof L.alpha==='number')?L.alpha:1;
+	        if(a<1){ ctx.save(); ctx.globalAlpha=a; }
+	        blitMap(L.tiles[i], c*MTILE, r*MTILE);
+	        if(a<1) ctx.restore();
+	      }
 	    };
-	    for(const e of enemies) if(e.st==='dead'  && _enemyCovered(e)) drawEnemy(e);
-	    for(const e of enemies) if(e.st!=='dead'  && _enemyCovered(e)) drawEnemy(e);
+	    // Raio de "esconder": nao e so o corpo (SPR/2) - a arma na mao fica deslocada do
+	    // centro (SPR*0.35) e tem seu proprio raio (SPR/2) por cima disso, entao o alcance
+	    // real do que precisa ser coberto e maior que o corpo sozinho. Sem essa folga, a
+	    // arma (e o flash/selo de superaquecimento) ficava sobrando visivel fora da area
+	    // escondida, mesmo com o corpo corretamente coberto por baixo.
+	    const HIDE_PAD = SPR*1.6;
+	    const hideCells = [], visibleDead = [], visibleAlive = [];
+	    for(const e of enemies){
+	      if(e.st==='dead' && e.deathT>=CORPSE_LIFETIME) continue;   // corpo ja sumiu
+	      const anchorC = Math.floor(e.x/MTILE), anchorR = Math.floor(e.y/MTILE);
+	      const isHidden = _coveredFor(anchorC, anchorR, e.L);
+	      if(isHidden){
+	        const c0e=Math.floor((e.x-HIDE_PAD)/MTILE), c1e=Math.floor((e.x+HIDE_PAD)/MTILE);
+	        const r0e=Math.floor((e.y-6-HIDE_PAD)/MTILE), r1e=Math.floor((e.y-6+HIDE_PAD)/MTILE);
+	        for(let r=r0e; r<=r1e; r++) for(let c=c0e; c<=c1e; c++) hideCells.push([c,r]);
+	      } else {
+	        (e.st==='dead' ? visibleDead : visibleAlive).push(e);
+	      }
+	    }
+	    for(const [c,r] of hideCells) _drawTileAt(c,r);
+	    for(const e of visibleDead){
+	      const a = corpseAlpha(e);
+	      if(a<1){ ctx.save(); ctx.globalAlpha=a; }
+	      drawEnemy(e);
+	      if(a<1) ctx.restore();
+	    }
+	    for(const e of visibleAlive) drawEnemy(e);
 	  }
 
 
@@ -2753,8 +2984,8 @@ function frame(t){
 function start(){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
-  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=0;
-  hpGhost=100; armorGhost=0;
+  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=100;
+  hpGhost=100; armorGhost=100;
   shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
   healAura=0;
@@ -2786,7 +3017,7 @@ window.__spawnChest=(c,r,items,v)=>{ chests.push({c,r,v:CHEST_TILES[v]?v:1,
 window.__chests=()=>chests.map(b=>({c:b.c,r:b.r,st:b.st,dentro:b.items.length,voando:b.loot.length}));
 window.__mouse=(down)=>{ mouse.down=down; };
 window.__enemies=()=>enemies.map(e=>({c:Math.floor(e.x/MTILE), r:Math.floor(e.y/MTILE), L:e.L,
-  hp:e.hp, armor:e.armor, st:e.st, fsm:e.fsm, gun:e.gun}));
+  hp:e.hp, armor:e.armor, st:e.st, fsm:e.fsm, gun:e.gun, gunHeat:e.gunHeat, gunOverheat:e.gunOverheat}));
 window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
 
 //======================= BOOT =======================
