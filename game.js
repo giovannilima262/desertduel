@@ -394,6 +394,13 @@ function step(dt){
     e.gunHeat = Math.max(0, (e.gunHeat||0) - dt*(e.gunOverheat ? 0.30 : 0.20));
     if(e.gunOverheat && e.gunHeat <= 0.30) e.gunOverheat = false;
     e.overheatFlash = Math.max(0, (e.overheatFlash||0) - dt);
+    // Kit médico — igual ao player: usa quando HP baixo (≤40%), cura 50, aura verde
+    e.healAura = Math.max(0, (e.healAura||0) - dt);
+    if(e.medkits>0 && e.hp>0 && e.hp<=40){
+      e.medkits--; e.hp = Math.min(e.maxHp, e.hp+50);
+      e.healAura = 1.5;
+      chestSound(gunshotAtten(e.x, e.y));   // mesmo som do player ao curar
+    }
     // Dano da zona/tempestade — mesma regra do player, só que cada bot tem seu próprio
     // timer (não existia antes: bot nunca sofria dano da zona, então nunca tinha motivo
     // de verdade pra fugir dela).
@@ -1100,6 +1107,7 @@ function spawnEnemies(){
       id:k, x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L:(sv&&sv.levels)?sv.levels[0]:0,
       hp:100, maxHp:100, armor:100, maxArmor:100, shieldRechargeTimer:0,
       st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
+      healAura:0, medkits:2,
       // ── combate/visual ──
       gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
       facaCooldown:0, facaSwingT:0, facaSwingAng:0,
@@ -2053,6 +2061,18 @@ function drawEnemy(e){
     drawBotWeapon(e);   // arma que o bot carrega — sempre visível, começa com pistola
     // faca automática: desenhada num passe FINAL à parte (ver draw()), sempre por
     // cima de todo mundo — aqui cobriria/seria coberta dependendo da ordem do loop.
+    // Aura verde de cura (igual ao player) — mesma animação de anéis pulsando
+    if(e.healAura > 0){
+      const t = performance.now()/1000;
+      const k = e.healAura/1.5;
+      for(let ring=0;ring<3;ring++){
+        const ph = (t*0.8 + ring*0.33) % 1;
+        const rw = (k*1.2) * (0.55 + ph*0.45);
+        ctx.strokeStyle = 'rgba(143,209,50,'+((1-ph)*rw*0.55).toFixed(3)+')';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(e.x, e.y-4, SPR*0.7 + ph*SPR*0.55, 0, 6.28); ctx.stroke();
+      }
+    }
     // barra de vida da folha interface acima da cabeça (trilho branco + laranja)
     const bw=MTILE*1.5, bh=bw*14/64;
     drawUIBar(e.x-bw/2, e.y-SPR+4, bw, bh, 'orange', e.hp/e.maxHp);
