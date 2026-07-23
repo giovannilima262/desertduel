@@ -17,23 +17,33 @@
     color:#f4c95d; text-shadow:0 3px 0 #7a4a1e, 0 6px 12px rgba(0,0,0,.5); }
   #overlay p { margin:14px 0 26px; font-size:clamp(14px,2.4vw,20px); color:#e8dccb; max-width:560px; line-height:1.5; }
   #overlay .sub { font-size:clamp(12px,1.8vw,15px); color:#b8a690; margin-top:4px; }
+  #ovButtons { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; }
   #overlay button { font-size:clamp(18px,3vw,26px); font-weight:700; color:#fff;
     background:#c65b3a; border:none; border-bottom:5px solid #8f3b22; border-radius:12px;
     padding:14px 40px; cursor:pointer; letter-spacing:1px; }
   #overlay button:active { transform:translateY(3px); border-bottom-width:2px; }
+  #overlay button#reviveBtn { background:#5a9c4a; border-bottom-color:#2f6b1f; }
+  #reviveBtn.hidden, #deathPanel.hidden { display:none; }
   .kbd { display:inline-block; background:#3a2f27; border:1px solid #5a4a3c; border-radius:5px;
     padding:2px 8px; margin:0 2px; font-size:.85em; color:#f4c95d; }
+  #deathPanel { margin:8px 0 24px; padding:8px 16px; background:rgba(20,14,10,.55);
+    border:3px solid #7a4a1e; border-radius:14px; box-shadow:0 5px 0 rgba(0,0,0,.35); }
+  #deathStatsCanvas { display:block; image-rendering:pixelated; width:300px; height:70px; }
 </style>
 </head>
 <body>
   <canvas id="game"></canvas>
   <div id="overlay">
-    <h1>DESERT DUEL</h1>
-    <p>Last mascot standing wins. Grab guns off the sand, dodge the storm, blast the other 7.
+    <h1 id="ovTitle">DESERT DUEL</h1>
+    <p id="ovDesc">Last mascot standing wins. Grab guns off the sand, dodge the storm, blast the other 7.
        <br><span class="sub"><span class="kbd">WASD</span> move &nbsp; <span class="kbd">Mouse</span> aim &nbsp;
        <span class="kbd">Click / Hold</span> shoot &nbsp; walk over a gun to pick it up</span></p>
-    <button id="startBtn">START RUN</button>
+    <div id="deathPanel" class="hidden"><canvas id="deathStatsCanvas" width="300" height="70"></canvas></div>
+    <div id="ovButtons">
+      <button id="reviveBtn" class="hidden">REVIVER</button>
+      <button id="startBtn">START RUN</button>
+    </div>
   </div>
-  <script src="game.js?v=42"></script>
+  <script src="game.js?v=43"></script>
 </body>
 </html>

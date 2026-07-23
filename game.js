@@ -23,13 +23,19 @@ const ZONE_BASE_DMG = 2;             // dano base por tick (escala com o nº da 
 
 //======================= CANVAS =======================
 const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d');   // let (não const): a tela de morte redireciona pra
+                                      // um mini-canvas à parte pra reaproveitar os mesmos
+                                      // helpers de desenho (drawBmpText/drawCard/drawCoinShape)
 let VW=0, VH=0;
 function resize(){ VW=canvas.width=innerWidth; VH=canvas.height=innerHeight; ctx.imageSmoothingEnabled=false; }
 addEventListener('resize', resize); resize();
 
 const overlay  = document.getElementById('overlay');
 const startBtn = document.getElementById('startBtn');
+const reviveBtn = document.getElementById('reviveBtn');
+const deathPanel = document.getElementById('deathPanel');
+const deathStatsCanvas = document.getElementById('deathStatsCanvas');
+const ovDesc = document.getElementById('ovDesc');
 
 //======================= ASSETS =======================
 const IMG = {};
@@ -1188,20 +1194,71 @@ function damagePlayer(dmg, hx, hy, killer){
 }
 // ── Morte do player: único ponto de saída — reaproveita o overlay/#startBtn do menu ──
 const PLAYER_DEAD = 3;   // último frame da folha players = pose de morte (igual ENEMY_DEAD)
+// Painel de estatísticas da tela de morte: desenha num mini-canvas à parte (não o
+// principal do jogo), reaproveitando os mesmos helpers de HUD (fonte bitmap, ícone da
+// caveira, moeda, ampulheta) — por isso `ctx` foi trocado de const pra let, só pra
+// poder apontar temporariamente pra esse outro canvas e devolver depois.
+function renderDeathStatsCanvas(){
+  if(!deathStatsCanvas || !IMG.interface) return;
+  const saved = ctx;
+  ctx = deathStatsCanvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const W=deathStatsCanvas.width, H=deathStatsCanvas.height, colW=W/3;
+  ctx.clearRect(0,0,W,H);
+  const capY=15, statY=48;
+  const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
+  // ABATES
+  let x0=colW*0.5;
+  drawBmpText('ABATES', x0, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
+  ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, x0-32, statY-13, 26, 26);
+  drawBmpText(kills, x0+8, statY, 22, {color:'#fff', align:'left'});
+  // MOEDAS
+  let x1=colW*1.5;
+  drawBmpText('MOEDAS', x1, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
+  ctx.save(); ctx.translate(x1-20, statY-1); drawCoinShape(20); ctx.restore();
+  drawBmpText(coins, x1+4, statY, 22, {color:'#fff', align:'left'});
+  // TEMPO
+  let x2=colW*2.5;
+  drawBmpText('TEMPO', x2, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
+  drawPixelGlyph(GLYPH_HOURGLASS, x2-22, statY-1, 2.1, 'rgba(255,255,255,.85)');
+  drawBmpText(mm+':'+ss, x2-4, statY, 17, {color:'#fff', align:'left'});
+  ctx = saved;
+}
+let deathGunSnapshot = 'pistola';   // arma que tava na mão na hora da morte — pra "reviver"
 function killPlayer(killer){
   if(state !== 'playing') return;
+  deathGunSnapshot = gun;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
   dropWeaponOnDeath(player.x, player.y, gun);
   pushKillFeed(player, killer);
   playerKiller = killer && killer.st==='alive' ? killer : null;
   spectator = playerKiller;   // foca em quem te matou
-  const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-  const h1 = overlay.querySelector('h1'), p = overlay.querySelector('p');
+  const h1 = overlay.querySelector('h1');
   if(h1) h1.textContent = 'VOCÊ MORREU';
-  if(p) p.innerHTML = 'Abates: '+kills+' — sobreviveu '+mm+':'+ss;
+  if(ovDesc) ovDesc.style.display = 'none';
+  if(deathPanel) deathPanel.classList.remove('hidden');
+  if(reviveBtn) reviveBtn.classList.remove('hidden');
+  startBtn.textContent = 'NOVA PARTIDA';
+  renderDeathStatsCanvas();
   overlay.classList.remove('hidden');
   canvas.style.cursor = 'crosshair';
 }
+// Reviver exatamente onde morreu, com a arma de antes — abates/moedas/tempo continuam
+// (é a mesma partida, só que sem passar pelo spawn de novo).
+function revivePlayer(){
+  if(state !== 'dead') return;
+  player.hp = 100; player.armor = 100;
+  hpGhost = 100; armorGhost = 100;
+  shieldRechargeTimer = 0; prevHp = 100;
+  player.frame = 0; player.moving = false;
+  gun = deathGunSnapshot;
+  fireCooldown = 0; fireLatch = false; gunHeat = 0; gunOverheat = false; overheatFlash = 0;
+  spectator = null; playerKiller = null;
+  overlay.classList.add('hidden');
+  canvas.style.cursor = 'none';
+  state = 'playing';
+}
+reviveBtn.addEventListener('click', revivePlayer);
 
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 
