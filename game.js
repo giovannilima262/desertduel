@@ -296,6 +296,7 @@ let bullets = [];           // projectiles: {x,y,vx,vy,life}
 let hits = [];              // impact sparks at target
 let smoke = [];             // pegadas no chão
 let footprintDist = 0;       // distância acumulada para spawn de pegada
+let playerStuckTimer = 0;    // travado numa quina (ver forceUnstick)
 let shakePhase = 0;          // screen shake damped oscillation
 let fireCooldown = 0;       // time until next shot allowed
 // ── SUPERAQUECIMENTO: atirar esquenta o cano; estourou = trava até esfriar ──
@@ -322,6 +323,41 @@ function moveEntityAxis(ent, nx, ny, horiz){
   return true;
 }
 function moveAxis(nx,ny,horiz){ return moveEntityAxis(player, nx, ny, horiz); }
+// ── Paliativo de travamento: acha uma célula andável bem perto (mesmo nível) e "chuta"
+// a entidade pra lá — usado quando ela fica tempo demais sem progredir de verdade numa
+// quina/reentrância do mapa (bug de colisão numa diagonal, não falta de tentativa).
+// Serve pro player (que trava parado sem conseguir sair de certos cantos do mapa) e
+// pros bots (reforça o replan de rota — trocar de alvo não adianta se a quina em si
+// continuar no caminho).
+function findEscapeCell(ent){
+  const c0=Math.floor(ent.x/MTILE), r0=Math.floor(ent.y/MTILE);
+  for(let ring=1; ring<=4; ring++){
+    for(let dr=-ring; dr<=ring; dr++) for(let dc=-ring; dc<=ring; dc++){
+      if(Math.max(Math.abs(dc),Math.abs(dr))!==ring) continue;
+      const c=c0+dc, r=r0+dr;
+      if(canEnterCell(c0,r0,ent.L,c,r)!==null) return {c,r};
+    }
+  }
+  return null;
+}
+function forceUnstick(ent){
+  const cell = findEscapeCell(ent);
+  if(!cell) return false;
+  ent.x = cell.c*MTILE+MTILE/2; ent.y = cell.r*MTILE+MTILE/2;
+  return true;
+}
+// "Travado de verdade" pra quem tenta andar num eixo só (reto, sem diagonal — o caso
+// mais comum em corredor/escada estreita): se dx===0, okY sozinho SEMPRE dá true (é um
+// não-passo, "ainda tô na mesma célula", não prova nada), então checar "!okX && !okY"
+// cru nunca detecta um bloqueio de eixo único — é exatamente por isso que o bot fica
+// parado preso na parede sem nunca acionar o forceUnstick. Só conta como bloqueado o
+// eixo que realmente tentou andar (delta != 0); se todo eixo tentado falhou, travou.
+function movementBlocked(dx, dy, okX, okY){
+  const EPS = 0.5;   // px — resíduo de chegada não conta como "tentando" andar nesse eixo
+  const triedX = Math.abs(dx)>EPS, triedY = Math.abs(dy)>EPS;
+  if(!triedX && !triedY) return false;
+  return (!triedX || !okX) && (!triedY || !okY);
+}
 // Corrige quem ficou cravado num colisor de bloqueio (canto entre duas paredes que o
 // check por eixo/lead do moveEntityAxis não pega, ou empurrão entre corpos que jogou
 // alguém pra dentro de uma parede — aquele empurrão não valida colisão). Roda toda vez
@@ -378,8 +414,14 @@ function step(dt){
       const l=Math.hypot(dx,dy), s=SPEED*dt;
       if(dx) player.flip = dx<0;
       player.heading = Math.atan2(dy, dx);               // direção do movimento (WASD)
-      moveAxis(player.x+dx/l*s, player.y, true);
-      moveAxis(player.x, player.y+dy/l*s, false);
+      const okX = moveAxis(player.x+dx/l*s, player.y, true);
+      const okY = moveAxis(player.x, player.y+dy/l*s, false);
+      // Travado de verdade (nenhum eixo que tentou andar teve sucesso) — depois de
+      // 0.8s force sair da quina.
+      playerStuckTimer = movementBlocked(dx,dy,okX,okY) ? playerStuckTimer+dt : 0;
+      if(playerStuckTimer > 0.8){ if(forceUnstick(player)) playerStuckTimer = 0; }
+    } else {
+      playerStuckTimer = 0;
     }
   }
   // ── Inimigos: IA (decide, anda, mira, atira, pega arma), timers ──
@@ -1181,7 +1223,7 @@ function spawnEnemies(){
       st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
       healAura:0, medkits:2,
       // ── combate/visual ──
-      gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*6.28, flip:false, moving:false,
+      gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*Math.PI*2-Math.PI, flip:false, moving:false,
       facaCooldown:0, facaSwingT:0, facaSwingAng:0,
       animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0, footprintDist:0,
       // ── IA ──
@@ -1189,8 +1231,7 @@ function spawnEnemies(){
       critterTarget:null,
       lootGoal:null, lootPriority: Math.random() < 0.3,
       path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
-      wanderTarget:null,
-      noProgTimer:0, noProgX:null, noProgY:null,
+      wanderTarget:null, hardStuckTimer:0,
     });
   }
   dmgPops = []; deathPops = []; shieldBreaks = []; killPulseT = 999; killBurstT = 999;
@@ -1421,6 +1462,27 @@ const AI_CRITTER_HUNT_PCT = 0.50;     // abaixo desse HP, bicho vira prioridade
 const AI_ENGAGE_STOP_DIST = MTILE*6;
 const AI_BOT_SPEED = SPEED*0.85;   // levemente mais devagar que o player — sensação "de bot"
 const AI_AIM_ERROR = 0.05;         // erro de mira humano (rad), além do spread da própria arma
+// Mira do bot vira suave em vez de "grudada" no waypoint cru: um corredor apertado
+// (escada, quina) pode exigir reverter quase 180° de um waypoint pro próximo, e sem
+// suavização isso vira um giro instantâneo — a "mira frenética pra vários lados" que
+// aparecia mesmo sozinho, sem ninguém por perto (só andando/procurando algo).
+const AI_TURN_RATE = Math.PI*5;   // rad/s — meia-volta em ~0.2s, ainda ágil no combate
+function turnToward(cur, target, maxDelta){
+  let diff = target - cur;
+  while(diff > Math.PI) diff -= 2*Math.PI;
+  while(diff < -Math.PI) diff += 2*Math.PI;
+  if(diff > maxDelta) diff = maxDelta;
+  else if(diff < -maxDelta) diff = -maxDelta;
+  // Sem isso o ângulo devolvido não fica preso em [-π,π] (só a DIFERENÇA era normalizada,
+  // não o resultado final) — ele vai saindo do intervalo aos poucos a cada frame, e o
+  // teste "Math.abs(aimAngle) > PI/2" que decide se espelha a arma verticalmente (pra
+  // não desenhar de ponta cabeça ao mirar pra esquerda) para de bater com o ângulo real
+  // já rotacionado. É isso que deixava a arma de alguns bots de ponta cabeça.
+  let result = cur + diff;
+  while(result > Math.PI) result -= 2*Math.PI;
+  while(result < -Math.PI) result += 2*Math.PI;
+  return result;
+}
 const AI_REACT_MIN = 0.12, AI_REACT_MAX = 0.37;   // atraso de reação antes do 1º tiro num alvo novo
 
 function canEnterCell(fromC,fromR,fromL, toC,toR){
@@ -1493,10 +1555,24 @@ function setBotGoal(e, gc, gr){
   if(!e.pathGoal || e.pathGoal.c!==gc || e.pathGoal.r!==gr){
     e.pathGoal = {c:gc, r:gr};
     e.path = []; e.pathIndex = 0; e.repathTimer = 0;
+    e.pathGoalSetT = elapsedT;
   }
 }
+// Objetivo demorando demais: mesma meta (mesma célula) há tempo demais sem chegar —
+// não é sobre um frame travado (isso é o hardStuckTimer), é "essa perseguição não tá
+// dando em nada, muda de direção". Não se aplica durante ENGAGE (o alvo se move, o
+// pathGoal muda toda hora sozinho, então nunca fica "velho" de verdade perseguindo
+// alguém de verdade) — só pra metas fixas tipo loot/bicho/zona/explorar.
+const AI_GOAL_TIMEOUT = 4.5;
 function updateBotPathing(e, dt){
   if(!e.pathGoal) return;
+  if(e.fsm!=='ENGAGE' && e.fsm!=='FLEE' && (elapsedT - (e.pathGoalSetT||elapsedT)) > AI_GOAL_TIMEOUT){
+    e.target=null; e.lastKnownTargetPos=null; e.lootGoal=null; e.zoneGoal=null; e.critterTarget=null;
+    e.path=[]; e.pathIndex=0; e.pathGoal=null; e.wanderTarget=null; e.pathFailCount=0;
+    e.fsm=null; e.decisionTimer=0; e.hardStuckTimer=0; e.stuckTimer=0;
+    forceUnstick(e);
+    return;
+  }
   e.repathTimer -= dt;
   const needsPath = e.path.length===0 || e.pathIndex>=e.path.length;
   const stuck = e.stuckTimer > 0.6;
@@ -1528,8 +1604,10 @@ function followPath(e, dt){
     const s = AI_BOT_SPEED*dt, l = dist||1;
     const okX = moveEntityAxis(e, e.x+dx/l*s, e.y, true);
     const okY = moveEntityAxis(e, e.x, e.y+dy/l*s, false);
-    e.moving = true; e.aimAngle = Math.atan2(dy,dx); e.flip = dx<0;
-    e.stuckTimer = (!okX && !okY) ? e.stuckTimer+dt : 0;
+    e.moving = true; e.aimAngle = turnToward(e.aimAngle, Math.atan2(dy,dx), AI_TURN_RATE*dt); e.flip = dx<0;
+    const blocked = movementBlocked(dx,dy,okX,okY);
+    e.stuckTimer = blocked ? e.stuckTimer+dt : 0;
+    noteBlockedMovement(e, blocked, dt);
     return true;
   }
   // Sem waypoints ainda prontos (esperando a vez no orçamento de pathfinding por
@@ -1542,8 +1620,10 @@ function followPath(e, dt){
   const s = AI_BOT_SPEED*dt, l = dist||1;
   const okX = moveEntityAxis(e, e.x+dx/l*s, e.y, true);
   const okY = moveEntityAxis(e, e.x, e.y+dy/l*s, false);
-  e.moving = true; e.aimAngle = Math.atan2(dy,dx); e.flip = dx<0;
-  e.stuckTimer = (!okX && !okY) ? e.stuckTimer+dt : 0;
+  e.moving = true; e.aimAngle = turnToward(e.aimAngle, Math.atan2(dy,dx), AI_TURN_RATE*dt); e.flip = dx<0;
+  const blocked = movementBlocked(dx,dy,okX,okY);
+  e.stuckTimer = blocked ? e.stuckTimer+dt : 0;
+  noteBlockedMovement(e, blocked, dt);
   return true;
 }
 
@@ -1742,28 +1822,30 @@ function botStrafe(e, t, dt){
   const okX = moveEntityAxis(e, e.x+px*s, e.y, true);
   const okY = moveEntityAxis(e, e.x, e.y+py*s, false);
   e.moving = true; e.flip = dx<0;
-  if(!okX && !okY) e.strafeTimer = 0;   // bateu em algo — troca de lado no próximo tick
+  const blocked = movementBlocked(px,py,okX,okY);
+  if(blocked) e.strafeTimer = 0;   // bateu em algo — troca de lado no próximo tick
+  // Trocar de lado uma vez não adianta se o bot tá encurralado numa parede/canto perto
+  // do alvo (os dois lados batem) — sem isso ele fica ali oscilando pra sempre em vez
+  // de sair da quina, exatamente o "travado na parede" que ainda acontecia em combate.
+  noteBlockedMovement(e, blocked, dt);
 }
-// Vigia de "travado": mede progresso real de posição a cada ~1.1s. Se o bot devia
-// estar se movendo (e.moving true no fim do frame anterior) mas mal saiu do lugar —
-// preso numa quina, travado no strafe contra parede, empurrando outro bot etc — larga
-// tudo (alvo/loot/zona/bicho) e força uma decisão nova no próximo tick. Sem isso o bot
-// pode ficar preso tremendo a mira pra cima/baixo no mesmo canto pra sempre.
-function updateBotStuckWatch(e, dt){
-  if(!e.moving){ e.noProgTimer = 0; e.noProgX = e.x; e.noProgY = e.y; return; }
-  if(e.noProgX===null){ e.noProgX=e.x; e.noProgY=e.y; e.noProgTimer=0; return; }
-  e.noProgTimer += dt;
-  if(e.noProgTimer < 1.1) return;
-  const moved = Math.hypot(e.x-e.noProgX, e.y-e.noProgY);
-  e.noProgTimer = 0; e.noProgX = e.x; e.noProgY = e.y;
-  if(moved < MTILE*0.5 && e.fsm!=='FLEE'){
+// Travado de verdade: os DOIS eixos do movimento pretendido bloqueados no mesmo frame,
+// por tempo demais seguido (ver okX/okY em followPath) — não é "orbitando/estrafegando
+// sem sair do lugar" (isso é normal em combate, tem posição líquida parada mas tá se
+// mexendo o tempo todo); é ficar de verdade sem conseguir dar nenhum passo. Troca de
+// objetivo não resolve se a quina em si continuar no caminho — chuta o bot pra uma
+// célula andável vizinha, igual o player.
+function noteBlockedMovement(e, blocked, dt){
+  e.hardStuckTimer = blocked ? (e.hardStuckTimer||0)+dt : 0;
+  if(e.hardStuckTimer > 1.0){
+    e.hardStuckTimer = 0;
     e.target=null; e.lastKnownTargetPos=null; e.lootGoal=null; e.zoneGoal=null; e.critterTarget=null;
-    e.path=[]; e.pathGoal=null; e.wanderTarget=null; e.pathFailCount=0;
+    e.path=[]; e.pathIndex=0; e.pathGoal=null; e.wanderTarget=null; e.pathFailCount=0;
     e.fsm=null; e.decisionTimer=0;
+    forceUnstick(e);
   }
 }
 function updateBotAI(e, dt){
-  updateBotStuckWatch(e, dt);
   decideBotFSM(e, dt);
 
   if(e.fsm === 'FLEE'){
@@ -1781,7 +1863,7 @@ function updateBotAI(e, dt){
     // direção que tá correndo (followPath vira a mira pro rumo do movimento, então
     // sobrescreve aqui por último).
     if(e.target){
-      e.aimAngle = Math.atan2((e.target.y-6)-(e.y-6), e.target.x-e.x);
+      e.aimAngle = turnToward(e.aimAngle, Math.atan2((e.target.y-6)-(e.y-6), e.target.x-e.x), AI_TURN_RATE*dt);
       botTryFire(e, dt, e.target);
     }
     return;
@@ -1791,8 +1873,11 @@ function updateBotAI(e, dt){
     const cr = e.critterTarget;
     if(cr && cr.st!=='dead' && cr.L===e.L){
       setBotGoal(e, Math.floor(cr.x/MTILE), Math.floor(cr.y/MTILE));
-      e.aimAngle = Math.atan2((cr.y-6)-(e.y-6), cr.x-e.x);
       updateBotPathing(e, dt); followPath(e, dt);
+      // Mira no bicho por ÚLTIMO — followPath sobrescreve aimAngle com a direção do
+      // waypoint (que ziguezagueia contornando obstáculo), então tem que vir depois,
+      // senão a mira "treme" seguindo o caminho em vez do alvo de verdade.
+      e.aimAngle = turnToward(e.aimAngle, Math.atan2((cr.y-6)-(e.y-6), cr.x-e.x), AI_TURN_RATE*dt);
       botTryFire(e, dt, cr);   // atira ou esfaqueia — bala/faca já casam com critter
       return;
     }
@@ -1812,12 +1897,16 @@ function updateBotAI(e, dt){
     }
     updateBotPathing(e, dt); followPath(e, dt);
     const t = e.target;
-    if(t){ e.aimAngle = Math.atan2((t.y-6)-(e.y-6), t.x-e.x); botTryFire(e, dt, t); }
+    if(t){ e.aimAngle = turnToward(e.aimAngle, Math.atan2((t.y-6)-(e.y-6), t.x-e.x), AI_TURN_RATE*dt); botTryFire(e, dt, t); }
     return;
   }
   if(e.fsm === 'ENGAGE'){
+    // Mira no alvo (ou na última posição conhecida) sempre por ÚLTIMO, depois de mover —
+    // followPath/botStrafe sobrescrevem aimAngle com a direção do movimento (waypoint
+    // do path, que ziguezagueia contornando parede/escada), então setar a mira ANTES
+    // do movimento fazia ela "tremer" seguindo o caminho em vez de travar no alvo (era
+    // a mira frenética "pra vários lados" quando na real tava só perseguindo/reposicionando).
     const t = e.target, aimAt = t || e.lastKnownTargetPos;
-    if(aimAt) e.aimAngle = Math.atan2((aimAt.y-6)-(e.y-6), aimAt.x-e.x);
     if(t){
       const d = Math.hypot(t.x-e.x, t.y-e.y);
       if(e.gunOverheat){
@@ -1839,10 +1928,12 @@ function updateBotAI(e, dt){
         e.path=[]; e.pathGoal=null;
         botStrafe(e, t, dt);
       }
+      e.aimAngle = turnToward(e.aimAngle, Math.atan2((aimAt.y-6)-(e.y-6), aimAt.x-e.x), AI_TURN_RATE*dt);
       botTryFire(e, dt, t);
     } else if(e.lastKnownTargetPos){
       setBotGoal(e, Math.floor(e.lastKnownTargetPos.x/MTILE), Math.floor(e.lastKnownTargetPos.y/MTILE));
       updateBotPathing(e, dt); followPath(e, dt);
+      e.aimAngle = turnToward(e.aimAngle, Math.atan2((aimAt.y-6)-(e.y-6), aimAt.x-e.x), AI_TURN_RATE*dt);
     }
     return;
   }
