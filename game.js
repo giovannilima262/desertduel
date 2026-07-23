@@ -1224,7 +1224,7 @@ function makeEnemyObj(id, sc, sr, L, nome, skinIdx){
     critterTarget:null,
     lootGoal:null, lootPriority: Math.random() < 0.3,
     path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
-    wanderTarget:null, hardStuckTimer:0,
+    wanderTarget:null, hardStuckTimer:0, crossLevelTarget:null,
   };
 }
 let nextEnemyId = 0;
@@ -1713,6 +1713,18 @@ function findVisibleHostile(e){
   }
   return null;
 }
+// Sabe que tem alguém perto só que num andar diferente — não pra mirar (bala não
+// atravessa nível, ver colisão de bala), mas pra ir de propósito buscar a escada/ponte
+// e procurar briga em vez de vagar às cegas quando não tem mais nada melhor pra fazer.
+function findCrossLevelHostile(e){
+  let best=null, bestD=AI_DETECTION_RADIUS;
+  for(const h of hostileList(e)){
+    if(h.L === e.L) continue;
+    const d = Math.hypot(h.x-e.x, h.y-e.y);
+    if(d < bestD){ bestD = d; best = h; }
+  }
+  return best;
+}
 
 // ── Tier de arma: "isso é upgrade de verdade?" (margem de 10% dentro do mesmo tier) ──
 function isUpgrade(e, gunId){
@@ -1839,8 +1851,13 @@ function decideBotFSM(e, dt){
   else if(e.lastKnownTargetPos && elapsedT - e.lastKnownTargetPos.t < AI_MEMORY_TIME) e.fsm = 'ENGAGE';
   else {
     const loot = findBestLootGoal(e);
-    e.lootGoal = loot;
-    e.fsm = loot ? 'SEEK_LOOT' : 'EXPLORE';
+    if(loot){ e.lootGoal = loot; e.fsm = 'SEEK_LOOT'; return; }
+    // Nada pra fazer no próprio andar — sabe que tem gente perto em outro andar (não
+    // pra mirar, só posição) e vai de propósito buscar a escada/ponte pra brigar em
+    // vez de vagar às cegas sem rumo.
+    const cross = findCrossLevelHostile(e);
+    if(cross){ e.crossLevelTarget = cross; e.fsm = 'SEEK_CONFLICT'; return; }
+    e.fsm = 'EXPLORE';
   }
 }
 function botTryFire(e, dt, target){
@@ -1939,6 +1956,21 @@ function updateBotAI(e, dt){
       return;
     }
     e.critterTarget = null; e.fsm = 'EXPLORE';   // bicho morreu/sumiu — volta a vagar
+    return;
+  }
+  if(e.fsm === 'SEEK_CONFLICT'){
+    // Sabe que tem alguém em outro andar — vai de propósito buscar a escada/ponte pra
+    // procurar briga em vez de vagar às cegas. Sem mira/tiro aqui (bala não atravessa
+    // nível): assim que o path atravessar pro mesmo andar, o findVisibleHostile normal
+    // assume e o bot entra em ENGAGE de verdade.
+    const ct = e.crossLevelTarget;
+    const stillValid = ct && (ct===player ? ct.hp>0 : ct.st==='alive');
+    if(stillValid && ct.L!==e.L){
+      setBotGoal(e, Math.floor(ct.x/MTILE), Math.floor(ct.y/MTILE));
+      updateBotPathing(e, dt); followPath(e, dt);
+      return;
+    }
+    e.crossLevelTarget = null; e.fsm = 'EXPLORE';   // já chegou no andar, ou o alvo sumiu/morreu
     return;
   }
   if(e.fsm === 'AVOID_ZONE'){
