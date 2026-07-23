@@ -267,6 +267,123 @@ let chests = [];                    // {c,r,v,items,st:'closed'|'charging'|'open
 let kills = 0;                      // abates (bots ainda não existem — já fica pronto)
 let elapsedT = 0;                   // cronômetro da partida (chip do relógio)
 let medkits = 2;                    // slot [2] — tecla 2 usa (cura 50)
+// ── Moedas: bicho mata=3, abate=20, baú normal=50/dourado=100, sobreviver=1000 ──
+// Voam do local do evento até quem ganhou (player OU bot — mesma lógica do "+10" de
+// cura do bicho, que já segue o matador vivo até chegar) — só quem é o player conta
+// pro contador do HUD e toca o som em volume cheio; bot ganhando só tem o visual.
+let coins = 0;
+let coinPops = [];                  // {fx,fy,tx,ty,to,t,delay,dur,give,collected}
+let coinPulseT = 999, coinBurstT = 999;   // pulso/brilho do chip de moedas (mesmo padrão do de abates)
+let matchWon = false;               // só premia a vitória uma vez por partida
+const COINS_CRITTER = 3, COINS_KILL = 20, COINS_CHEST_NORMAL = 50, COINS_CHEST_GOLD = 100, COINS_WIN = 1000;
+function addCoins(amount, x, y, to){
+  if(amount<=0 || !to) return;
+  const n = clamp(Math.round(amount/6), 1, 6);   // várias moedinhas visuais em drops grandes, sem exagerar
+  let given = 0;
+  for(let i=0;i<n;i++){
+    const give = i===n-1 ? amount-given : Math.round(amount/n);
+    given += give;
+    const ang = Math.random()*6.28, jit = 5+Math.random()*10;
+    coinPops.push({
+      // Cada moeda sai de um pontinho espalhado ao redor do evento (não todas do
+      // mesmo pixel) e faz uma curva lateral própria (side) — sem isso, todas viajam
+      // pela mesma linha reta e parecem 1 moeda só grudada, não "várias".
+      fx:x+Math.cos(ang)*jit, fy:y+Math.sin(ang)*jit, tx:to.x, ty:to.y-6, to,
+      side: (Math.random()*2-1) * (20+Math.random()*28),
+      t:0, delay:i*0.09, dur:0.55, give, collected:false,
+    });
+  }
+}
+function updateCoinPops(dt){
+  coinPulseT += dt; coinBurstT += dt;
+  for(const p of coinPops){
+    if(p.delay>0){ p.delay = Math.max(0, p.delay-dt); continue; }
+    p.t += dt;
+    if(p.to && p.to.hp>0){ p.tx=p.to.x; p.ty=p.to.y-6; }   // segue quem ganhou até chegar
+    if(!p.collected && p.t >= p.dur){
+      p.collected = true;
+      const isPlayer = p.to===player;
+      if(isPlayer){ coins += p.give; coinPulseT = 0; coinBurstT = 0; }
+      coinCollectSound(isPlayer ? 1 : gunshotAtten(p.tx, p.ty));
+    }
+  }
+  coinPops = coinPops.filter(p => p.delay>0 || p.t < p.dur+0.15);
+}
+// Moeda em pixel art de verdade (blocos sólidos, sem curva/gradiente) — combina com o
+// resto do jogo, que é tudo sprite pixelado. 7x7, 3 cores só.
+const COIN_PIXELS = [
+  '..111..',
+  '.12221.',
+  '1222321',
+  '1233221',
+  '1222221',
+  '.12221.',
+  '..111..',
+];
+const COIN_PIX_COLORS = {'1':'#8a5a12', '2':'#f2c14e', '3':'#fff6d0'};
+function drawCoinSilhouette(n, px, color){
+  ctx.fillStyle = color;
+  for(let ry=0; ry<n; ry++){
+    const row = COIN_PIXELS[ry];
+    for(let rx=0; rx<row.length; rx++){
+      if(row[rx]==='.') continue;
+      ctx.fillRect(Math.round(rx*px), Math.round(ry*px), Math.ceil(px)+1, Math.ceil(px)+1);
+    }
+  }
+}
+function drawCoinShape(size){
+  const n = COIN_PIXELS.length, px = size/n;
+  ctx.save();
+  ctx.translate(-size/2, -size/2);
+  // Contorno escuro: desenha a silhueta inteira deslocada nas 4 direções antes da
+  // moeda colorida — sem isso ela some contra o fundo (areia é um tom parecido).
+  const off = Math.max(1, px*0.9);
+  [[off,0],[-off,0],[0,off],[0,-off]].forEach(([ox,oy])=>{
+    ctx.save(); ctx.translate(ox,oy); drawCoinSilhouette(n, px, '#5c3a06'); ctx.restore();
+  });
+  for(let ry=0; ry<n; ry++){
+    const row = COIN_PIXELS[ry];
+    for(let rx=0; rx<row.length; rx++){
+      const c = COIN_PIX_COLORS[row[rx]];
+      if(!c) continue;
+      ctx.fillStyle = c;
+      ctx.fillRect(Math.round(rx*px), Math.round(ry*px), Math.ceil(px)+1, Math.ceil(px)+1);
+    }
+  }
+  ctx.restore();
+}
+// Voa em curva própria até quem ganhou (mesmo espírito do "+10" de cura do bicho) —
+// pop de escala na saída e na chegada, sem suavizar/rotacionar o sprite (pixel art
+// fica borrado se girar/escalar em ângulo — só escala uniforme, que mantém nítido).
+function drawCoinPopsWorld(){
+  for(const p of coinPops){
+    if(p.delay>0) continue;
+    const k = clamp(p.t/p.dur, 0, 1), ease = 1-(1-k)*(1-k);
+    const dx = p.tx-p.fx, dy = p.ty-p.fy, len = Math.hypot(dx,dy)||1;
+    const perpX = -dy/len, perpY = dx/len;
+    const bulge = Math.sin(k*Math.PI) * p.side;
+    const x = p.fx + dx*ease + perpX*bulge;
+    const y = p.fy + dy*ease + perpY*bulge - Math.sin(k*Math.PI)*8;
+    const sc = k<0.15 ? k/0.15 : (k>0.8 ? Math.max(0,1-(k-0.8)/0.2) : 1);
+    if(sc<=0) continue;
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y)); ctx.scale(sc, sc);
+    drawCoinShape(6);
+    ctx.restore();
+  }
+}
+function coinCollectSound(atten=1){
+  // "Clink" metálico curto e brilhante — toca quando a moedinha chega e conta pro total
+  if(atten<=0) return;
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  const t=audioCtx.currentTime;
+  [[1760,0],[2350,0.03]].forEach(([f,d])=>{
+    const o=audioCtx.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(f,t+d);
+    const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
+    g.gain.exponentialRampToValueAtTime(0.09*atten,t+d+0.01); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.14);
+    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.16);
+  });
+}
 const PLAYER_NAME = '★ você';
 let killFeed = [];                   // {victim,killer,t,dur} — mini chat de abates no canto esquerdo
 const KILL_FEED_DUR = 6;            // segundos que cada entrada fica visível
@@ -392,6 +509,11 @@ function step(dt){
   elapsedT += dt;
   updateZone(dt);
   maybeRespawnEnemies(dt);
+  // Último de pé: todo mundo mais morreu e o player ainda tá vivo — só premia 1x.
+  if(!matchWon && player.hp>0 && enemies.length>0 && enemies.every(e=>e.st!=='alive')){
+    matchWon = true;
+    addCoins(COINS_WIN, player.x, player.y-20, player);
+  }
   // Trilha fantasma das barras: cura acompanha na hora, dano escorre devagar
   hpGhost    = player.hp    > hpGhost    ? player.hp    : Math.max(player.hp,    hpGhost    - dt*30);
   armorGhost = player.armor > armorGhost ? player.armor : Math.max(player.armor, armorGhost - dt*30);
@@ -579,6 +701,7 @@ function step(dt){
           b.st='open'; b.t=0; b.chargedBy=null;
           chestSound(cb===player ? 1 : gunshotAtten(bx, by));
           scatterChestLoot(b);
+          addCoins(b.v===1 ? COINS_CHEST_GOLD : COINS_CHEST_NORMAL, bx, by-8, cb);
         }
       } else {
         b.st='closed'; b.t=0; b.chargedBy=null;   // saiu do alcance/morreu = reseta
@@ -640,6 +763,7 @@ function step(dt){
   // Caveira de abate: sobe do corpo e depois voa até o contador de ABATES
   updateDeathPops(dt);
   updateShieldBreaks(dt);
+  updateCoinPops(dt);
   // Pegadas no chão — spawn a cada 12px percorridos
   if(player.moving){
     const s = SPEED*dt;
@@ -1407,8 +1531,11 @@ function killCritter(cr, owner){
   spawnCritterSplash(cr.x, cr.y);
   critterSquishSound(gunshotAtten(cr.x, cr.y));
   // Bicho morto = +1 HP pra quem matou (player ou bot). Um "+1" verde anima
-  // voando do corpo até o matador — simples, sem texto rebuscado.
+  // voando do corpo até o matador — simples, sem texto rebuscado. Moeda usa o mesmo
+  // "to" — visual de moeda voando vale pra player E bot, só o contador do HUD e o
+  // som em volume cheio são exclusivos do player.
   const to = owner==='player' ? player : owner && owner.st==='alive' ? owner : null;
+  if(to) addCoins(COINS_CRITTER, cr.x, cr.y-6, to);
   if(to){
     to.hp = Math.min((to.maxHp||100), to.hp + 10);
     critterHealPops.push({
@@ -1492,7 +1619,10 @@ function damageEnemy(e, dmg, hx, hy, owner){
     spawnDeathPop(e.x, e.y-6);
     if(byPlayer){                                      // abate só conta no contador do PLAYER
       kills++; killCollectSound(); killPulseT = 0; killBurstT = 0;
+      addCoins(COINS_KILL, e.x, e.y-6, player);
       shakePhase = Math.max(shakePhase, 0.4);
+    } else if(owner && owner.st==='alive'){
+      addCoins(COINS_KILL, e.x, e.y-6, owner);   // bot também ganha (visual só, sem contador)
     }
     // Corrente do espectador: se quem morreu era o foco, segue o assassino
     if(owner && owner.st==='alive' && e===spectator) spectator = owner;
@@ -3226,6 +3356,7 @@ function draw(){
   // 3e) Números de dano + caveira subindo do corpo + estilhaços de escudo — por cima de tudo no mundo
   drawDmgPops();
   drawDeathPopsWorld();
+  drawCoinPopsWorld();
   drawCritterHealPops();
   drawShieldBreaks();
   // ── Aura verde de cura ──
@@ -3426,6 +3557,29 @@ function drawBars(){
     ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, kX+9, kY+kH/2-14, 28, 28);
   }
   drawBmpText(kills, kX+44, kY+kH/2+1, 19, {color:'#fff'});
+  ctx.restore();
+  // ═══ Chip de moedas (colado ao lado do de abates): moeda dourada desenhada na hora ═══
+  const cW = 60 + bmpTextW(''+coins, 19), cH=38, cGap=8, cX=kX+kW+cGap, cY=18;
+  const ccx=cX+cW/2, ccy=cY+cH/2;
+  const cpDur=0.4, cp = coinPulseT<cpDur ? Math.sin((coinPulseT/cpDur)*Math.PI) : 0;
+  const cbDur=0.5, cb = coinBurstT<cbDur ? 1-coinBurstT/cbDur : 0;
+  if(cb>0){
+    ctx.save();
+    ctx.globalAlpha = cb*0.85;
+    ctx.strokeStyle = '#f2c14e'; ctx.lineWidth = 2+cb*2;
+    ctx.beginPath(); ctx.arc(ccx, ccy, 18+(1-cb)*32, 0, 6.28); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.translate(ccx, ccy); ctx.scale(1+cp*0.3, 1+cp*0.3); ctx.translate(-ccx, -ccy);
+  drawCard(cX, cY, cW, cH, UI_CARD.gray, 10);
+  if(cb>0){ ctx.fillStyle='rgba(242,193,78,'+(cb*0.35).toFixed(3)+')'; ctx.fillRect(cX, cY, cW, cH); }
+  const coinCx = cX+9+14, coinCy = cY+cH/2;
+  ctx.save();
+  ctx.translate(Math.round(coinCx), Math.round(coinCy));
+  drawCoinShape(22);
+  ctx.restore();
+  drawBmpText(coins, cX+44, cY+cH/2+1, 19, {color:'#fff'});
   ctx.restore();
 }
 function drawMinimap(){
@@ -3930,7 +4084,7 @@ function frame(t){
 function start(){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
-  elapsedT=0; kills=0; medkits=2; player.hp=100; player.armor=100;
+  elapsedT=0; kills=0; coins=0; coinPops=[]; matchWon=false; medkits=2; player.hp=100; player.armor=100;
   hpGhost=100; armorGhost=100;
   shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
