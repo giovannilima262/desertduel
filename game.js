@@ -391,6 +391,7 @@ function unstickFromBlocks(ent){
 function step(dt){
   elapsedT += dt;
   updateZone(dt);
+  maybeRespawnEnemies(dt);
   // Trilha fantasma das barras: cura acompanha na hora, dano escorre devagar
   hpGhost    = player.hp    > hpGhost    ? player.hp    : Math.max(player.hp,    hpGhost    - dt*30);
   armorGhost = player.armor > armorGhost ? player.armor : Math.max(player.armor, armorGhost - dt*30);
@@ -1188,6 +1189,11 @@ const BR_NAMES=[
 'EsqueletoVivo','BolinhaDeGude','CaldoDeCanaArmado','TiroDeMisericórdia','MiojoAtômico',
 ];
 let usedNames=[];   // nomes já sorteados nesta partida (sem repetir)
+let nameIdx=0;       // próximo índice livre em usedNames (spawn inicial E reforços depois)
+function nextBotName(){
+  if(nameIdx >= usedNames.length){ usedNames = shuffleInPlace([...BR_NAMES]); nameIdx = 0; }
+  return usedNames[nameIdx++];
+}
 
 // ── Bicho fraco (spawner configurável no editor): nasce, cresce e fica andando
 // devagar SÓ no próprio nível — nunca usa escada nem ponte. Qualquer bala ou golpe
@@ -1200,12 +1206,34 @@ let critterHealPops = [];   // "+1" verde do bicho morto voando pro player: {fx,
 const CRITTER_SPAWN_ANIM_DUR = 0.6;   // segundos "brotando" antes de poder andar
 const CRITTER_SPEED = SPEED * 0.13;   // bem devagar
 const CRITTER_WAVE_CHECK = 8;         // segundos entre checagens de leva nova
+// Fábrica compartilhada: spawn inicial E reforços depois usam o mesmo bot "de fábrica".
+function makeEnemyObj(id, sc, sr, L, nome, skinIdx){
+  const skin = ENEMY_SKINS[skinIdx % ENEMY_SKINS.length];
+  return {
+    id, nome: nome||('?'+id),
+    x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L,
+    hp:100, maxHp:100, armor:100, maxArmor:100, shieldRechargeTimer:0,
+    st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
+    healAura:0, medkits:2,
+    // ── combate/visual ──
+    gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*Math.PI*2-Math.PI, flip:false, moving:false,
+    facaCooldown:0, facaSwingT:0, facaSwingAng:0,
+    animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0, footprintDist:0,
+    // ── IA ──
+    fsm:'EXPLORE', decisionTimer:Math.random()*0.3, target:null, lastKnownTargetPos:null,
+    critterTarget:null,
+    lootGoal:null, lootPriority: Math.random() < 0.3,
+    path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
+    wanderTarget:null, hardStuckTimer:0,
+  };
+}
+let nextEnemyId = 0;
 function spawnEnemies(){
   enemies = [];
   killFeed = [];
   spectator = null; playerKiller = null;
   usedNames = shuffleInPlace([...BR_NAMES]);
-  let ni = 0;   // índice de nome pro próximo bot
+  nameIdx = 0;
   const spawnIdx = collectSpawnPoints(TOTAL_COMBATANTS);
   shuffleInPlace(spawnIdx);
   // Primeiro ponto sorteado vira o spawn do player — todo mundo disputa o mesmo pool
@@ -1214,28 +1242,51 @@ function spawnEnemies(){
   player.L = (psv && psv.levels) ? psv.levels[0] : 0;
   for(let k=1; k<spawnIdx.length; k++){
     const s=spawnIdx[k], sc=s%COLS, sr=(s/COLS)|0, sv=collInfo(coll[s]);
-    const skin = ENEMY_SKINS[k % ENEMY_SKINS.length];
-    const nome = usedNames[ni]; ni++;
-    enemies.push({
-      id:k, nome: nome||('?'+k),
-      x:sc*MTILE+MTILE/2, y:sr*MTILE+MTILE/2, L:(sv&&sv.levels)?sv.levels[0]:0,
-      hp:100, maxHp:100, armor:100, maxArmor:100, shieldRechargeTimer:0,
-      st:'alive', flashT:0, sheet:skin.sheet, row:skin.row,
-      healAura:0, medkits:2,
-      // ── combate/visual ──
-      gun:'pistola', fireCooldown:0, muzzleFlashT:0, aimAngle:Math.random()*Math.PI*2-Math.PI, flip:false, moving:false,
-      facaCooldown:0, facaSwingT:0, facaSwingAng:0,
-      animT:Math.random()*10, frame:0, overlapGunIdx:-1, gunHeat:0, gunOverheat:false, overheatFlash:0, deathT:0, zoneDmgTimer:0, strafeDir:1, strafeTimer:0, footprintDist:0,
-      // ── IA ──
-      fsm:'EXPLORE', decisionTimer:Math.random()*0.3, target:null, lastKnownTargetPos:null,
-      critterTarget:null,
-      lootGoal:null, lootPriority: Math.random() < 0.3,
-      path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
-      wanderTarget:null, hardStuckTimer:0,
-    });
+    enemies.push(makeEnemyObj(k, sc, sr, (sv&&sv.levels)?sv.levels[0]:0, nextBotName(), k));
   }
+  nextEnemyId = spawnIdx.length;
+  respawnCheckTimer = RESPAWN_CHECK_INTERVAL;
   dmgPops = []; deathPops = []; shieldBreaks = []; killPulseT = 999; killBurstT = 999;
   bullets = []; aiPathBudget = 0; aiUrgentPathBudget = 0;
+}
+// ── Reforços: até a safe 6 (zoneNum<6), mantém vivos sempre entre MIN e MAX_ALIVE_
+// ENEMIES — sem isso o jogo fica esvaziando rápido demais no início. Reaproveita os
+// mesmos pontos de spawn do mapa (tiles de spawn de verdade, não qualquer canto). O
+// alvo de reforço é sorteado dentro da faixa (não sempre o mesmo número fixo), pra
+// dar uma variação natural de quantos tão vivos em vez de ficar preso num valor só.
+const MIN_ALIVE_ENEMIES = 40;
+const MAX_ALIVE_ENEMIES = 50;
+const RESPAWN_ZONE_LIMIT = 6;
+const RESPAWN_CHECK_INTERVAL = 2;
+let respawnCheckTimer = RESPAWN_CHECK_INTERVAL;
+function pickReinforcementSpawn(){
+  const spawnCells = [];
+  for(let i=0;i<coll.length;i++){ const v=coll[i]; if(v===2 || (v>=200&&v<210)) spawnCells.push(i); }
+  const pool = spawnCells.length ? spawnCells : (()=>{
+    const c=[]; for(let i=0;i<coll.length;i++){ const ci=collInfo(coll[i]); if(ci && ci.kind!=='block') c.push(i); } return c;
+  })();
+  if(!pool.length) return null;
+  const s = pool[(Math.random()*pool.length)|0];
+  const sv = collInfo(coll[s]);
+  return { sc:s%COLS, sr:(s/COLS)|0, L:(sv&&sv.levels)?sv.levels[0]:0 };
+}
+function maybeRespawnEnemies(dt){
+  if(zoneNum >= RESPAWN_ZONE_LIMIT) return;
+  respawnCheckTimer -= dt;
+  if(respawnCheckTimer > 0) return;
+  respawnCheckTimer = RESPAWN_CHECK_INTERVAL;
+  const alive = enemies.reduce((n,e)=>n+(e.st==='alive'?1:0), 0);
+  if(alive >= MIN_ALIVE_ENEMIES) return;
+  const target = MIN_ALIVE_ENEMIES + Math.floor(Math.random()*(MAX_ALIVE_ENEMIES-MIN_ALIVE_ENEMIES+1));
+  const deficit = Math.min(target, MAX_ALIVE_ENEMIES) - alive;
+  for(let i=0; i<deficit; i++){
+    const sp = pickReinforcementSpawn();
+    if(!sp) break;
+    const nome = nextBotName();
+    const e = makeEnemyObj(nextEnemyId++, sp.sc, sp.sr, sp.L, nome, nextEnemyId);
+    enemies.push(e);
+    pushJoinFeed(e.nome);
+  }
 }
 
 // ── Bicho: colisão PRÓPRIA (sem escada, sem ponte — só piso/spawn do MESMO nível) ──
@@ -1400,6 +1451,12 @@ function pushKillFeed(victim, killer){
   const kn = killer==='player' ? PLAYER_NAME : (killer && killer.nome ? killer.nome : 'a zona');
   killFeed.push({victim:vn, killer:kn, t:0, dur:KILL_FEED_DUR, isPlayer:(victim===player||killer==='player')});
   // Mantém só as 8 mais recentes — mini chat limitado
+  while(killFeed.length > 8) killFeed.shift();
+}
+// Reforço chegando no mapa — mesma mini-chat dos abates, "Fulano ↑" (seta verde no
+// lugar da palavra "entrou", ver drawKillFeed).
+function pushJoinFeed(nome){
+  killFeed.push({isJoin:true, nome, t:0, dur:KILL_FEED_DUR});
   while(killFeed.length > 8) killFeed.shift();
 }
 function updateKillFeed(dt){
@@ -3672,11 +3729,29 @@ function drawKillFeed(){
   for(let i=0;i<killFeed.length;i++){
     const kf=killFeed[i];
     const a = kf.t<0.5 ? 1 : Math.max(0, 1-(kf.t-0.5)/(kf.dur-0.5));
-    const killerColor = kf.isPlayer ? '#f4c95d' : 'rgba(255,255,255,.75)';
-    ctx.save(); ctx.globalAlpha=a;
-    const kx = X;
-    const kw = drawBmpText(kf.killer, kx, Y0 - i*(sz+gap), sz, {color:killerColor, valign:'bottom'});
     const sy = Y0 - i*(sz+gap);
+    ctx.save(); ctx.globalAlpha=a;
+    if(kf.isJoin){
+      // "Fulano ↑" — seta verde no lugar da palavra "entrou" (reforço chegando)
+      const kw = drawBmpText(kf.nome, X, sy, sz, {color:'rgba(255,255,255,.85)', valign:'bottom'});
+      const asx = X + kw + 4, aiy = sy - sz/2 - icS/2 + 2;
+      ctx.fillStyle = '#8fd132';
+      ctx.beginPath();
+      ctx.moveTo(asx+icS/2, aiy+2);
+      ctx.lineTo(asx+icS-2, aiy+icS-4);
+      ctx.lineTo(asx+icS*0.62, aiy+icS-4);
+      ctx.lineTo(asx+icS*0.62, aiy+icS-2);
+      ctx.lineTo(asx+icS*0.38, aiy+icS-2);
+      ctx.lineTo(asx+icS*0.38, aiy+icS-4);
+      ctx.lineTo(asx+2, aiy+icS-4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
+    const killerColor = kf.isPlayer ? '#f4c95d' : 'rgba(255,255,255,.75)';
+    const kx = X;
+    const kw = drawBmpText(kf.killer, kx, sy, sz, {color:killerColor, valign:'bottom'});
     const sx = kx + kw + 4;
     const iy = sy - sz/2 - icS/2 + 2;   // centraliza a caveira com o texto
     ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, sx, iy, icS, icS);
