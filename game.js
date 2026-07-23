@@ -250,6 +250,12 @@ const WEAPONS = {
 };
 let gun = 'pistola';        // arma atual do player
 let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
+// Dropa a arma de quem morreu no chão — só se não for a pistola inicial (senão o
+// mapa ia encher de pistola, já que todo mundo começa com uma).
+function dropWeaponOnDeath(x, y, gunId){
+  if(!gunId || gunId==='pistola' || !WEAPONS[gunId]) return;
+  gunItems.push({ c:Math.floor(x/MTILE), r:Math.floor(y/MTILE), t:gunId, bob:Math.random()*6.28 });
+}
 let overlapGun = -1;        // item sob o player no frame anterior (troca só AO ENTRAR — sem flip-flop parado)
 // ── BAÚS: fechado → segura E perto → carregando (treme/brilha) → aberto (armas saltam) ──
 const CHEST_TILES = [ {closed:[0,12], open:[1,12]}, {closed:[2,12], open:[3,12]} ];   // laranja, dourado
@@ -1016,6 +1022,7 @@ const PLAYER_DEAD = 3;   // último frame da folha players = pose de morte (igua
 function killPlayer(killer){
   if(state !== 'playing') return;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
+  dropWeaponOnDeath(player.x, player.y, gun);
   pushKillFeed(player, killer);
   playerKiller = killer && killer.st==='alive' ? killer : null;
   spectator = playerKiller;   // foca em quem te matou
@@ -1183,6 +1190,7 @@ function spawnEnemies(){
       lootGoal:null, lootPriority: Math.random() < 0.3,
       path:[], pathIndex:0, pathGoal:null, repathTimer:Math.random()*1.5, stuckTimer:0,
       wanderTarget:null,
+      noProgTimer:0, noProgX:null, noProgY:null,
     });
   }
   dmgPops = []; deathPops = []; shieldBreaks = []; killPulseT = 999; killBurstT = 999;
@@ -1380,6 +1388,7 @@ function damageEnemy(e, dmg, hx, hy, owner){
   spawnDmgPop(px, py - (toArmor>0?10:0), toHp, kill); // se veio dano de escudo antes, empilha o número da vida acima
   if(kill){
     e.hp = 0; e.st='dead'; e.deathT = 0;
+    dropWeaponOnDeath(e.x, e.y, e.gun);
     pushKillFeed(e, owner);   // mini chat de abate
     enemyDieSound(atten);
     spawnDeathPop(e.x, e.y-6);
@@ -1576,15 +1585,24 @@ function isUpgrade(e, gunId){
   return false;
 }
 function findBestLootGoal(e){
+  // Nunca manda o bot atrás de loot fora da zona segura atual — senão ele sai puxado
+  // pelo SEEK_LOOT logo depois que o AVOID_ZONE acabou de trazer ele pra dentro, e
+  // fica entrando/saindo da tempestade em loop pra sempre atrás do mesmo item.
+  const inZone = (x,y) => !zoneCurrent || zoneState==='idle' || zoneCurrent.r<=0 ||
+    Math.hypot(x-zoneCurrent.cx, y-zoneCurrent.cy) <= zoneCurrent.r;
   let best=null, bestD=Infinity;
   for(const it of gunItems){
     if(!isUpgrade(e, it.t)) continue;
-    const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2, d=Math.hypot(gx-e.x, gy-e.y);
+    const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
+    if(!inZone(gx,gy)) continue;
+    const d=Math.hypot(gx-e.x, gy-e.y);
     if(d<bestD){ bestD=d; best={c:it.c, r:it.r}; }
   }
   for(const b of chests){
     if(b.st!=='closed') continue;
-    const bx=b.c*MTILE+MTILE/2, by=b.r*MTILE+MTILE/2, d=Math.hypot(bx-e.x, by-e.y);
+    const bx=b.c*MTILE+MTILE/2, by=b.r*MTILE+MTILE/2;
+    if(!inZone(bx,by)) continue;
+    const d=Math.hypot(bx-e.x, by-e.y);
     if(d<bestD){ bestD=d; best={c:b.c, r:b.r}; }
   }
   return best;
@@ -1653,19 +1671,23 @@ function decideBotFSM(e, dt){
   // enquanto a carga termina (senão sai do range a cada ciclo de decisão e reseta).
   if(e.fsm === 'SEEK_LOOT' && chests.some(b=>b.st==='charging' && b.chargedBy===e)) return;
 
-  // HP baixo → bicho por perto = prioridade máxima (cura +1 HP), acima de hostil/zona
-  if(hpPct <= AI_CRITTER_HUNT_PCT){
+  // Fora da zona segura: sempre vem antes de qualquer objetivo "de conforto" (cura,
+  // loot) — sobreviver à tempestade é mais urgente que farmar bicho ou trocar de arma.
+  // Ainda não é uma fuga cega que ignora tudo: continua atirando se um alvo aparecer
+  // no caminho de volta (ver updateBotAI).
+  const outsideZone = zoneCurrent && zoneState!=='idle' &&
+    (zoneCurrent.r<=0 || Math.hypot(e.x-zoneCurrent.cx, e.y-zoneCurrent.cy) > zoneCurrent.r);
+  if(outsideZone){ e.critterTarget = null; e.fsm = 'AVOID_ZONE'; return; }
+
+  // HP baixo → bicho por perto = prioridade máxima (cura), acima até de hostil visível.
+  // Acima do limiar de emergência, ainda vale desviar pra "completar" a vida (ficar
+  // com 100) se não tiver ninguém pra atirar agora — só não abandona uma troca de
+  // tiro em andamento por causa disso.
+  if(hpPct <= AI_CRITTER_HUNT_PCT || (hpPct < 1 && !target)){
     const cr = findNearbyCritter(e);
     if(cr){ e.critterTarget = cr; e.fsm = 'HUNT_CRITTER'; return; }
   }
   e.critterTarget = null;
-
-  // Fora da zona segura: prioridade alta (leva dano de verdade agora, igual o player) —
-  // mas não é uma fuga cega que ignora tudo, ainda atira se um alvo aparecer no caminho
-  // de volta (ver updateBotAI).
-  const outsideZone = zoneCurrent && zoneState!=='idle' &&
-    (zoneCurrent.r<=0 || Math.hypot(e.x-zoneCurrent.cx, e.y-zoneCurrent.cy) > zoneCurrent.r);
-  if(outsideZone){ e.fsm = 'AVOID_ZONE'; return; }
 
   if(target){
     // Alguns bots (personalidade "gananciosa", sorteada no spawn) preferem upar de
@@ -1722,7 +1744,26 @@ function botStrafe(e, t, dt){
   e.moving = true; e.flip = dx<0;
   if(!okX && !okY) e.strafeTimer = 0;   // bateu em algo — troca de lado no próximo tick
 }
+// Vigia de "travado": mede progresso real de posição a cada ~1.1s. Se o bot devia
+// estar se movendo (e.moving true no fim do frame anterior) mas mal saiu do lugar —
+// preso numa quina, travado no strafe contra parede, empurrando outro bot etc — larga
+// tudo (alvo/loot/zona/bicho) e força uma decisão nova no próximo tick. Sem isso o bot
+// pode ficar preso tremendo a mira pra cima/baixo no mesmo canto pra sempre.
+function updateBotStuckWatch(e, dt){
+  if(!e.moving){ e.noProgTimer = 0; e.noProgX = e.x; e.noProgY = e.y; return; }
+  if(e.noProgX===null){ e.noProgX=e.x; e.noProgY=e.y; e.noProgTimer=0; return; }
+  e.noProgTimer += dt;
+  if(e.noProgTimer < 1.1) return;
+  const moved = Math.hypot(e.x-e.noProgX, e.y-e.noProgY);
+  e.noProgTimer = 0; e.noProgX = e.x; e.noProgY = e.y;
+  if(moved < MTILE*0.5 && e.fsm!=='FLEE'){
+    e.target=null; e.lastKnownTargetPos=null; e.lootGoal=null; e.zoneGoal=null; e.critterTarget=null;
+    e.path=[]; e.pathGoal=null; e.wanderTarget=null; e.pathFailCount=0;
+    e.fsm=null; e.decisionTimer=0;
+  }
+}
 function updateBotAI(e, dt){
+  updateBotStuckWatch(e, dt);
   decideBotFSM(e, dt);
 
   if(e.fsm === 'FLEE'){
@@ -1835,7 +1876,12 @@ function botCheckGunPickup(e){
   for(let gi=0; gi<gunItems.length; gi++){
     const it=gunItems[gi];
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
-    if(Math.hypot(e.x-gx, e.y-gy) < MTILE*0.6){ cur=gi; break; }
+    // Raio bem maior que o do player (MTILE*0.6): o player anda até o centro exato do
+    // item de propósito, mas um bot só passa perto por acaso (lutando/fugindo) — com o
+    // raio apertado ele "roça" no item sem nunca entrar no círculo e nunca troca de arma,
+    // e isso pega muito mais os bots que já upgraram (só contam com esse encontro casual;
+    // o bot ainda na pistola tem o SEEK_LOOT mirando o centro exato do tile).
+    if(Math.hypot(e.x-gx, e.y-gy) < MTILE*1.0){ cur=gi; break; }
   }
   if(cur!==-1 && cur!==e.overlapGunIdx && isUpgrade(e, gunItems[cur].t)){
     const it=gunItems[cur], old=e.gun;
