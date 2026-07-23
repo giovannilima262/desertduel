@@ -1439,7 +1439,7 @@ function spawnEnemies(){
 // dar uma variação natural de quantos tão vivos em vez de ficar preso num valor só.
 const MIN_ALIVE_ENEMIES = 40;
 const MAX_ALIVE_ENEMIES = 50;
-const RESPAWN_ZONE_LIMIT = 6;
+const RESPAWN_ZONE_LIMIT = 8;
 const RESPAWN_CHECK_INTERVAL = 2;
 let respawnCheckTimer = RESPAWN_CHECK_INTERVAL;
 function pickReinforcementSpawn(){
