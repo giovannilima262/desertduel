@@ -669,12 +669,14 @@ function step(dt){
   let curOverlap = -1;
   if(player.hp>0) for(let gi=0; gi<gunItems.length; gi++){
     const it=gunItems[gi];
+    if(!it.t) continue;   // slot vazio (pistola descartada num swap — não fica largada)
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
     if(Math.hypot(player.x-gx, player.y-gy) < MTILE*0.6){ curOverlap=gi; break; }
   }
   if(curOverlap!==-1 && curOverlap!==overlapGun){
     const it=gunItems[curOverlap];
-    const old=gun; gun=it.t; it.t=old;                 // swap — a antiga fica no chão
+    const old=gun; gun=it.t;
+    it.t = old==='pistola' ? null : old;   // pistola descartada só some, não fica largada
     fireCooldown=0; fireLatch=false;
     gunHeat=0; gunOverheat=false;                      // arma do chão tá fria — trocar esfria!
     pickupSound();
@@ -1871,6 +1873,7 @@ function findBestLootGoal(e){
     Math.hypot(x-zoneCurrent.cx, y-zoneCurrent.cy) <= zoneCurrent.r;
   let best=null, bestD=Infinity;
   for(const it of gunItems){
+    if(!it.t) continue;   // slot vazio (pistola descartada num swap — não fica largada)
     if(!isUpgrade(e, it.t)) continue;
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
     if(!inZone(gx,gy)) continue;
@@ -2185,6 +2188,7 @@ function botCheckGunPickup(e){
   let cur=-1;
   for(let gi=0; gi<gunItems.length; gi++){
     const it=gunItems[gi];
+    if(!it.t) continue;   // slot vazio (pistola descartada num swap — não fica largada)
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
     // Raio bem maior que o do player (MTILE*0.6): o player anda até o centro exato do
     // item de propósito, mas um bot só passa perto por acaso (lutando/fugindo) — com o
@@ -2195,7 +2199,9 @@ function botCheckGunPickup(e){
   }
   if(cur!==-1 && cur!==e.overlapGunIdx && isUpgrade(e, gunItems[cur].t)){
     const it=gunItems[cur], old=e.gun;
-    e.gun=it.t; it.t=old; e.fireCooldown=0;
+    e.gun=it.t;
+    it.t = old==='pistola' ? null : old;   // pistola descartada só some, não fica largada
+    e.fireCooldown=0;
     pickupSound(gunshotAtten(e.x, e.y));
   }
   e.overlapGunIdx = cur;
@@ -3577,7 +3583,7 @@ function drawBars(){
   const coinCx = cX+9+14, coinCy = cY+cH/2;
   ctx.save();
   ctx.translate(Math.round(coinCx), Math.round(coinCy));
-  drawCoinShape(22);
+  drawCoinShape(17);
   ctx.restore();
   drawBmpText(coins, cX+44, cY+cH/2+1, 19, {color:'#fff'});
   ctx.restore();
