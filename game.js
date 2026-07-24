@@ -30,12 +30,6 @@ let VW=0, VH=0;
 function resize(){ VW=canvas.width=innerWidth; VH=canvas.height=innerHeight; ctx.imageSmoothingEnabled=false; }
 addEventListener('resize', resize); resize();
 
-const overlay  = document.getElementById('overlay');
-const startBtn = document.getElementById('startBtn');
-const reviveBtn = document.getElementById('reviveBtn');
-const deathPanel = document.getElementById('deathPanel');
-const deathStatsCanvas = document.getElementById('deathStatsCanvas');
-const ovDesc = document.getElementById('ovDesc');
 
 //======================= ASSETS =======================
 const IMG = {};
@@ -46,6 +40,31 @@ function blitMap(t,x,y){
   const s=MAP_SHEETS[t[0]]||MAP_SHEETS[0], img=IMG[s[0]]; if(!img) return;
   const ts=s[1]; ctx.drawImage(img, t[1]*ts, t[2]*ts, ts, ts, x, y, MTILE, MTILE);
 }
+//======================= PERSONAGENS (LOJA) =======================
+// Mesmas 5 skins que os bots já podem sortear (ver ENEMY_SKINS mais abaixo) — a
+// primeira é a mascote padrão (grátis, já "dona"); as outras se compram com moedas
+// guardadas entre partidas (ver saveData/persistSaveData).
+const CHARACTERS = [
+  { sheet:'players', row:0, name:'Raposo do Deserto',      price:0 },
+  { sheet:'players', row:1, name:'Urso Xerife',             price:300 },
+  { sheet:'players', row:2, name:'Lobo Solitário',          price:600 },
+  { sheet:'players', row:3, name:'Coelho Fugitivo',         price:900 },
+  { sheet:'enemies',  row:3, name:'Monstro da Tempestade',  price:1500 },
+];
+const SAVE_KEY = 'dd_save_v1';   // moedas guardadas + skins compradas — sobrevive a partidas/recargas
+function loadSaveData(){
+  try{
+    const d = JSON.parse(localStorage.getItem(SAVE_KEY));
+    let owned = Array.isArray(d.owned) ? d.owned.filter(i=>Number.isInteger(i) && i>=0 && i<CHARACTERS.length) : [];
+    if(!owned.includes(0)) owned.push(0);   // skin 0 é sempre dona (padrão grátis)
+    let selected = Number.isInteger(d.selected) ? d.selected : 0;
+    if(!owned.includes(selected)) selected = 0;
+    return { bank: Math.max(0, d.bank|0), owned, selected };
+  }catch(e){ return { bank:0, owned:[0], selected:0 }; }
+}
+let saveData = loadSaveData();
+function persistSaveData(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(saveData)); }catch(e){} }
+
 function blitMapMato(t,x,y,rot){
   // Draw a tile with wind sway — pivots from bottom-center.
   // Uses a cached offscreen copy so rotation never bleeds neighbour tiles.
@@ -208,7 +227,7 @@ function canStep(fromVal,L,toVal,toOver){
 }
 
 //======================= PLAYER =======================
-const player = { x:0, y:0, L:0, skin:0, animT:0, frame:0, moving:false, flip:false, hp:100, armor:100,
+const player = { x:0, y:0, L:0, skin:0, sheet:'players', animT:0, frame:0, moving:false, flip:false, hp:100, armor:100,
   heading:-Math.PI/2, headingS:-Math.PI/2,   // direção de MOVIMENTO (alvo + suavizada) — bússola/minimapa
   facaCooldown:0, facaSwingT:0, facaSwingAng:0 };   // faca automática (ver updateMelee)
 const keys={};
@@ -281,6 +300,7 @@ let coins = 0;
 let coinPops = [];                  // {fx,fy,tx,ty,to,t,delay,dur,give,collected}
 let coinPulseT = 999, coinBurstT = 999;   // pulso/brilho do chip de moedas (mesmo padrão do de abates)
 let matchWon = false;               // só premia a vitória uma vez por partida
+let victoryTimer = -1;               // conta regressiva pós-vitória até congelar a tela
 const COINS_CRITTER = 3, COINS_KILL = 20, COINS_CHEST_NORMAL = 50, COINS_CHEST_GOLD = 100, COINS_WIN = 1000;
 function addCoins(amount, x, y, to){
   if(amount<=0 || !to) return;
@@ -512,13 +532,21 @@ function unstickFromBlocks(ent){
   if(hit){ ent.x += corrX; ent.y += corrY; }
 }
 function step(dt){
+  if(introWipe){ introWipe.t += dt; if(introWipe.t >= introWipe.dur) introWipe = null; }
   elapsedT += dt;
   updateZone(dt);
   maybeRespawnEnemies(dt);
   // Último de pé: todo mundo mais morreu e o player ainda tá vivo — só premia 1x.
+  // Não congela na hora: espera a animação das 1000 moedas terminar de "cair" antes
+  // de travar a tela de vitória (ver victoryTimer).
   if(!matchWon && player.hp>0 && enemies.length>0 && enemies.every(e=>e.st!=='alive')){
     matchWon = true;
     addCoins(COINS_WIN, player.x, player.y-20, player);
+    victoryTimer = 1.3;
+  }
+  if(victoryTimer > 0){
+    victoryTimer -= dt;
+    if(victoryTimer <= 0) showVictoryScreen();
   }
   // Trilha fantasma das barras: cura acompanha na hora, dano escorre devagar
   hpGhost    = player.hp    > hpGhost    ? player.hp    : Math.max(player.hp,    hpGhost    - dt*30);
@@ -1192,61 +1220,37 @@ function damagePlayer(dmg, hx, hy, killer){
   spawnDmgPop(px, py - (toArmor>0?10:0), toHp, player.hp<=0);
   if(player.hp <= 0) killPlayer(killer); else enemyHitSound();
 }
-// ── Morte do player: único ponto de saída — reaproveita o overlay/#startBtn do menu ──
+// ── Morte do player: único ponto de saída — a tela de morte/vitória é 100% canvas
+// (ver drawEndScreen mais abaixo), no mesmo estilo do menu inicial. ──
 const PLAYER_DEAD = 3;   // último frame da folha players = pose de morte (igual ENEMY_DEAD)
-// Painel de estatísticas da tela de morte: desenha num mini-canvas à parte (não o
-// principal do jogo), reaproveitando os mesmos helpers de HUD (fonte bitmap, ícone da
-// caveira, moeda, ampulheta) — por isso `ctx` foi trocado de const pra let, só pra
-// poder apontar temporariamente pra esse outro canvas e devolver depois.
-function renderDeathStatsCanvas(){
-  if(!deathStatsCanvas || !IMG.interface) return;
-  const saved = ctx;
-  ctx = deathStatsCanvas.getContext('2d');
-  ctx.imageSmoothingEnabled = false;
-  const W=deathStatsCanvas.width, H=deathStatsCanvas.height, colW=W/3;
-  ctx.clearRect(0,0,W,H);
-  const capY=15, statY=48;
-  const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-  // ABATES
-  let x0=colW*0.5;
-  drawBmpText('ABATES', x0, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
-  ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, x0-32, statY-13, 26, 26);
-  drawBmpText(kills, x0+8, statY, 22, {color:'#fff', align:'left'});
-  // MOEDAS
-  let x1=colW*1.5;
-  drawBmpText('MOEDAS', x1, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
-  ctx.save(); ctx.translate(x1-20, statY-1); drawCoinShape(20); ctx.restore();
-  drawBmpText(coins, x1+4, statY, 22, {color:'#fff', align:'left'});
-  // TEMPO
-  let x2=colW*2.5;
-  drawBmpText('TEMPO', x2, capY, 10, {color:'rgba(255,255,255,.65)', align:'center'});
-  drawPixelGlyph(GLYPH_HOURGLASS, x2-22, statY-1, 2.1, 'rgba(255,255,255,.85)');
-  drawBmpText(mm+':'+ss, x2-4, statY, 17, {color:'#fff', align:'left'});
-  ctx = saved;
-}
 let deathGunSnapshot = 'pistola';   // arma que tava na mão na hora da morte — pra "reviver"
+// REVIVER só existe 1x por partida e só até a zona 8 (zoneNum é 0-indexado — mesmo
+// limite que os reforços de bots já usam, ver RESPAWN_ZONE_LIMIT) — depois disso é
+// tarde demais pra valer a pena continuar de onde morreu.
+let reviveUsed = false;
+const REVIVE_ZONE_LIMIT = 8;
+// Cronômetro do card de stats na tela de morte/vitória: precisa TRAVAR no instante
+// da morte (elapsedT global continua correndo — bots e zona seguem vivos atrás do
+// painel) senão o "TEMPO" fica contando por conta própria enquanto você decide se
+// reviver ou não. Na vitória não precisa (elapsedT já para sozinho — ver frame()),
+// mas capturamos igual por uniformidade.
+let endElapsedT = 0;
 function killPlayer(killer){
   if(state !== 'playing') return;
   deathGunSnapshot = gun;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
+  endElapsedT = elapsedT;
   dropWeaponOnDeath(player.x, player.y, gun);
   pushKillFeed(player, killer);
   playerKiller = killer && killer.st==='alive' ? killer : null;
   spectator = playerKiller;   // foca em quem te matou
-  const h1 = overlay.querySelector('h1');
-  if(h1) h1.textContent = 'VOCÊ MORREU';
-  if(ovDesc) ovDesc.style.display = 'none';
-  if(deathPanel) deathPanel.classList.remove('hidden');
-  if(reviveBtn) reviveBtn.classList.remove('hidden');
-  startBtn.textContent = 'NOVA PARTIDA';
-  renderDeathStatsCanvas();
-  overlay.classList.remove('hidden');
-  canvas.style.cursor = 'crosshair';
+  canvas.style.cursor = 'pointer';
 }
 // Reviver exatamente onde morreu, com a arma de antes — abates/moedas/tempo continuam
 // (é a mesma partida, só que sem passar pelo spawn de novo).
 function revivePlayer(){
-  if(state !== 'dead') return;
+  if(state !== 'dead' || reviveUsed || zoneNum >= REVIVE_ZONE_LIMIT) return;
+  reviveUsed = true;
   player.hp = 100; player.armor = 100;
   hpGhost = 100; armorGhost = 100;
   shieldRechargeTimer = 0; prevHp = 100;
@@ -1254,11 +1258,23 @@ function revivePlayer(){
   gun = deathGunSnapshot;
   fireCooldown = 0; fireLatch = false; gunHeat = 0; gunOverheat = false; overheatFlash = 0;
   spectator = null; playerKiller = null;
-  overlay.classList.add('hidden');
   canvas.style.cursor = 'none';
   state = 'playing';
 }
-reviveBtn.addEventListener('click', revivePlayer);
+// Vitória (último de pé): mesmo painel de estatísticas da tela de morte, mas sem
+// "reviver" (não tem sentido, já ganhou) — e o jogo/mundo congela de vez (ver frame()),
+// diferente da morte, que continua rolando atrás do painel. wonSnapshot guarda a
+// última imagem renderizada pra desenhar de novo (idempotente) sem precisar rodar
+// step()/draw() a cada frame enquanto congelado.
+let wonSnapshot = null;
+function showVictoryScreen(){
+  state = 'won';
+  endElapsedT = elapsedT;
+  wonSnapshot = document.createElement('canvas');
+  wonSnapshot.width = canvas.width; wonSnapshot.height = canvas.height;
+  wonSnapshot.getContext('2d').drawImage(canvas, 0, 0);
+  canvas.style.cursor = 'pointer';
+}
 
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 
@@ -2986,8 +3002,8 @@ function drawZoneOnMinimap(cx, cy, z){
 // o "AND" das 4 direções) e subtraída da silhueta original — sobra só um
 // anel fino PRA DENTRO do contorno real, sem inchar o personagem.
 const _plyOutlineSil = {};
-function playerSilhouette(frame, skin){
-  const key = frame+','+skin;
+function playerSilhouette(frame, skin, sheet){
+  const key = sheet+','+frame+','+skin;
   let c = _plyOutlineSil[key];
   if(!c){
     c = document.createElement('canvas'); c.width=SPR; c.height=SPR;
@@ -2995,7 +3011,7 @@ function playerSilhouette(frame, skin){
     // desenhado um pouco menor que o sprite real (0.78x, centralizado) — contorno
     // no tamanho cheio do corpo lia como "personagem gordo/inchado".
     const sc=0.78, sw=SPR*sc, sh=SPR*sc, ox=(SPR-sw)/2, oy=(SPR-sh)/2;
-    g.drawImage(IMG.players, frame*SPR, skin*SPR, SPR, SPR, ox, oy, sw, sh);
+    g.drawImage(IMG[sheet], frame*SPR, skin*SPR, SPR, SPR, ox, oy, sw, sh);
     g.globalCompositeOperation='source-in';
     g.fillStyle='#fff6cc';
     g.fillRect(0, 0, SPR, SPR);
@@ -3011,8 +3027,8 @@ const _plyEroded = document.createElement('canvas');
 _plyEroded.width = SPR; _plyEroded.height = SPR;
 const _plyErodedCtx = _plyEroded.getContext('2d');
 _plyErodedCtx.imageSmoothingEnabled = false;
-function playerOutlineImg(frame, skin){
-  const sil = playerSilhouette(frame, skin);
+function playerOutlineImg(frame, skin, sheet){
+  const sil = playerSilhouette(frame, skin, sheet);
   const gc = _plyErodedCtx;
   gc.clearRect(0, 0, SPR, SPR);
   gc.globalCompositeOperation = 'source-over';
@@ -3030,8 +3046,8 @@ function playerOutlineImg(frame, skin){
   return _plyOutlineScratch;
 }
 function drawPlayerOutline(px, py, flip){
-  if(!IMG.players) return;
-  const img = playerOutlineImg(player.frame, player.skin);
+  if(!IMG[player.sheet]) return;
+  const img = playerOutlineImg(player.frame, player.skin, player.sheet);
   ctx.save();
   ctx.translate(px, py-6);
   if(flip) ctx.scale(-1,1);
@@ -3044,6 +3060,31 @@ function drawPlayerOutline(px, py, flip){
 let cam={x:0,y:0};
 let spectator = null;       // inimigo sendo seguido depois que o player morre
 let playerKiller = null;   // quem matou o player (pra focar nele primeiro)
+// Transição "íris" ao clicar em JOGAR — duas fases: primeiro o círculo FECHA em
+// cima do menu (jogarWipe), aí sim a partida começa de verdade por baixo, já
+// escondida, e o círculo ABRE de novo revelando o mundo (introWipe).
+let jogarWipe = null;    // fase 1 (fechando, sobre o menu) — {x,y,t,dur,maxR}
+let introWipe = null;    // fase 2 (abrindo, sobre o jogo) — {x,y,t,dur,maxR}
+// Máscara compartilhada pelas duas fases — um "buraco" redondo na tela toda,
+// com o anel dourado brilhando na borda enquanto anima.
+function drawIrisMask(x, y, r, ringAlpha){
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, VW, VH);
+  ctx.moveTo(x+r, y);
+  ctx.arc(x, y, r, 0, 6.283);
+  ctx.fillStyle = '#0c0810';
+  ctx.fill('evenodd');
+  ctx.restore();
+  if(ringAlpha > 0.002){
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283);
+    ctx.strokeStyle = 'rgba(244,201,93,'+ringAlpha.toFixed(3)+')';
+    ctx.lineWidth = 5; ctx.shadowColor = 'rgba(244,201,93,.9)'; ctx.shadowBlur = 16;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
 function draw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#c99a63'; ctx.fillRect(0,0,VW,VH);
@@ -3133,10 +3174,10 @@ function draw(){
   // 2) player (sombra + mascote 24px, ancorado nos pés)
 	  ctx.fillStyle='rgba(0,0,0,0.28)';
 	  ctx.beginPath(); ctx.ellipse(player.x, player.y+5, 6, 2.6, 0, 0, 6.28); ctx.fill();
-	  if(IMG.players){
+	  if(IMG[player.sheet]){
 	    ctx.save(); ctx.translate(player.x, player.y-6);
 	    if(player.flip) ctx.scale(-1,1);
-	    ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	    ctx.drawImage(IMG[player.sheet], player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	    ctx.restore();
 	  }
 
@@ -3318,7 +3359,7 @@ function draw(){
 	      // mesmo com o corpo escondido por um piso acima, por exemplo).
 	      ctx.save(); ctx.translate(player.x, player.y-6);
 	      if(player.flip) ctx.scale(-1,1);
-	      ctx.drawImage(IMG.players, player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+	      ctx.drawImage(IMG[player.sheet], player.frame*SPR, player.skin*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
 	      ctx.restore();
 	      if(!_weaponOnBridge && IMG.weapons && player.hp>0) _drawWeapon();
 	    } else {
@@ -3497,6 +3538,14 @@ function draw(){
     const cs=SPR*2;
     ctx.drawImage(IMG.weapons, 5*SPR, 3*SPR, SPR, SPR, mouse.sx-cs/2, mouse.sy-cs/2, cs, cs);
   }
+
+  // ── Transição íris fase 2 (ver introWipe) — por cima de TUDO, inclusive o crosshair ──
+  if(introWipe){
+    const k = Math.min(1, introWipe.t/introWipe.dur);
+    const e = 1-Math.pow(1-k, 3);           // ease-out: abre rápido e assenta suave
+    const r = Math.max(0, introWipe.maxR * e);
+    drawIrisMask(introWipe.x, introWipe.y, r, k<1 ? 0.9*(1-k) : 0);
+  }
 }
 
 //======================= HUD (layout novo) =======================
@@ -3569,9 +3618,9 @@ function drawBars(){
   }
   ctx.save();
   ctx.beginPath(); ctx.arc(acx,acy,ar*0.8,0,6.28); ctx.clip();
-  if(IMG.players){
+  if(IMG[player.sheet]){
     ctx.imageSmoothingEnabled=false;
-    ctx.drawImage(IMG.players, 0, (player.skin||0)*SPR, SPR, SPR, acx-33, acy-30, 66, 66);
+    ctx.drawImage(IMG[player.sheet], 0, (player.skin||0)*SPR, SPR, SPR, acx-33, acy-30, 66, 66);
   }
   ctx.restore();
   // Barras à direita do avatar (sem ícones — as cores já dizem o que é)
@@ -4135,32 +4184,473 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
   ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
+//======================= MENU / LOJA DE PERSONAGENS (100% canvas) =======================
+// Mesmo kit visual do HUD (fonte bitmap da folha interface + cards 9-slice) — nada de
+// HTML/CSS aqui, pra ficar idêntico ao resto do jogo em vez de destoar com fonte de sistema.
+let browseIdx = saveData.selected;   // qual card o carrossel mostra agora (não é sempre o equipado)
+let menuAnimT = 0, menuFrame = 0;    // walk-cycle do mascote no preview do menu
+let menuHit = {};                    // retângulos clicáveis do frame atual — ver canvas 'click' abaixo
+let menuPulseT = 999;                // pulso do chip de moedas ao comprar
+
+// Quebra um texto em linhas que cabem em maxW usando a MESMA fonte bitmap (uppercase —
+// a folha não tem minúsculas, ver bmpNorm) — pro parágrafo de instruções do menu.
+function wrapBmpLines(str, size, maxW){
+  const words = bmpNorm(str).split(' ');
+  const lines = []; let cur = '';
+  for(const w of words){
+    const test = cur ? cur+' '+w : w;
+    if(cur && bmpTextW(test, size) > maxW){ lines.push(cur); cur = w; } else cur = test;
+  }
+  if(cur) lines.push(cur);
+  return lines;
+}
+// ── Chrome dourado/violeta (estilo do mockup de referência): painel arredondado
+// com gradiente + moldura dourada dupla. Nada disso vem de sprite — é tudo vetor,
+// então escala liso em qualquer resolução (ao contrário dos cards em pixel da
+// folha interface, que ficam granulados se esticados fora do tamanho nativo). ──
+function drawMenuPanel(x, y, w, h, r, top, bot){
+  // sombra projetada — só na base preenchida (a moldura por cima desenha sem
+  // sombra, senão o contorno duplicava o efeito e ficava borrado).
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 6;
+  const g = ctx.createLinearGradient(0, y, 0, y+h);
+  g.addColorStop(0, top); g.addColorStop(1, bot);
+  roundRect(x, y, w, h, r); ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+  // brilho "glacê" no topo — só dentro do painel (clip), dá o ar de superfície
+  // polida em vez de cor chapada.
+  ctx.save();
+  roundRect(x, y, w, h, r); ctx.clip();
+  const hi = ctx.createLinearGradient(0, y, 0, y+h*0.45);
+  hi.addColorStop(0, 'rgba(255,255,255,.16)'); hi.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hi; ctx.fillRect(x, y, w, h*0.45);
+  ctx.restore();
+  // moldura dourada em relevo (clara em cima → escura embaixo, como metal sob luz)
+  // + friso escuro fino por dentro pra separar nitidamente do fundo.
+  const gb = ctx.createLinearGradient(0, y, 0, y+h);
+  gb.addColorStop(0, '#fff3c2'); gb.addColorStop(0.45, '#e8b94a'); gb.addColorStop(1, '#8a5f1c');
+  roundRect(x, y, w, h, r); ctx.strokeStyle = gb; ctx.lineWidth = Math.max(2.5, h*0.05); ctx.stroke();
+  roundRect(x+1.5, y+1.5, w-3, h-3, Math.max(0,r-1.5)); ctx.strokeStyle = 'rgba(25,12,38,.85)'; ctx.lineWidth = 1; ctx.stroke();
+}
+// Botão "quente" genérico: fundo em gradiente + brilho glacê no topo + moldura em
+// relevo — mesmo em qualquer paleta de cor (dourado pro JOGAR, verde pro REVIVER).
+function drawColoredButton(x, y, w, h, r, fillTop, fillMid, fillBot, borderTop, borderBot){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 6;
+  const g = ctx.createLinearGradient(0, y, 0, y+h);
+  g.addColorStop(0, fillTop); g.addColorStop(0.5, fillMid); g.addColorStop(1, fillBot);
+  roundRect(x, y, w, h, r); ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundRect(x, y, w, h, r); ctx.clip();
+  const hi = ctx.createLinearGradient(0, y, 0, y+h*0.5);
+  hi.addColorStop(0, 'rgba(255,255,255,.4)'); hi.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hi; ctx.fillRect(x, y, w, h*0.5);
+  ctx.restore();
+  const gb = ctx.createLinearGradient(0, y, 0, y+h);
+  gb.addColorStop(0, borderTop); gb.addColorStop(1, borderBot);
+  roundRect(x, y, w, h, r); ctx.strokeStyle = gb; ctx.lineWidth = Math.max(2.5, h*0.08); ctx.stroke();
+}
+// Botão quente (JOGAR / comprar habilitado) — gradiente dourado-laranja, pra
+// destacar como ação principal.
+function drawGoldButton(x, y, w, h, r){
+  drawColoredButton(x, y, w, h, r, '#ffe8a0', '#f0a838', '#c9711c', '#c99354', '#3c1f0a');
+}
+// Setas do carrossel: mesmo painel violeta/dourado, com um triângulo vetor por
+// cima (mais limpo que esticar o sprite triangular da folha interface aqui).
+// Cantos bem menos arredondados que os outros painéis — quadrado com "quina
+// macia", não um blob circular.
+function drawMenuArrow(x, y, size, dir){
+  drawMenuPanel(x, y, size, size, size*0.1, '#4a3a72', '#241733');
+  ctx.save();
+  ctx.translate(x+size/2, y+size/2);
+  if(dir<0) ctx.scale(-1,1);
+  const s = size*0.22;
+  ctx.beginPath(); ctx.moveTo(s*0.6,0); ctx.lineTo(-s*0.5,-s*0.85); ctx.lineTo(-s*0.5,s*0.85); ctx.closePath();
+  ctx.fillStyle = '#f4ece0'; ctx.fill();
+  ctx.restore();
+}
+// Logo "DESERT DUEL": fonte de sistema bem gorda (não a fonte bitmap do resto do
+// HUD — pra um título pedir mais destaque que um label, ele precisa de uma cara
+// diferente do texto normal) com contorno duplo, sombra funda e gradiente dourado
+// + um brilho fino no topo das letras pra dar um verniz "logo de jogo".
+function drawGameTitle(cx, y, size, maxW, text, palette){
+  text = text || 'DESERT DUEL';
+  palette = palette || ['#fff6c8', '#f9d35c', '#d9871c'];
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const fontStack = 'px "Arial Black", Impact, "Segoe UI", sans-serif';
+  ctx.font = '900 '+size+fontStack;
+  // ctx.font (fonte de sistema) não tem o bmpTextW que a fonte bitmap tem pra
+  // caber no espaço — sem isso o título estoura a largura em tela estreita.
+  if(maxW){
+    const w = ctx.measureText(text).width;
+    if(w > maxW){ size *= maxW/w; ctx.font = '900 '+size+fontStack; }
+  }
+  const baseY = y + size*0.32;
+
+  ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = size*0.16; ctx.shadowOffsetY = size*0.08;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#3a1c0a'; ctx.lineWidth = size*0.17;
+  ctx.strokeText(text, cx, baseY);
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.strokeStyle = '#7a3d14'; ctx.lineWidth = size*0.08;
+  ctx.strokeText(text, cx, baseY);
+
+  const g = ctx.createLinearGradient(0, y-size*0.62, 0, baseY+size*0.06);
+  g.addColorStop(0, palette[0]); g.addColorStop(0.42, palette[1]); g.addColorStop(1, palette[2]);
+  ctx.fillStyle = g;
+  ctx.fillText(text, cx, baseY);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(cx-size*3, y-size*0.62, size*6, size*0.34); ctx.clip();
+  ctx.globalAlpha = 0.4; ctx.fillStyle = '#fff';
+  ctx.fillText(text, cx, baseY);
+  ctx.restore();
+  ctx.restore();
+}
+// Fator de escala compartilhado pelo menu e pela tela de morte/vitória — o design
+// foi feito com 1280x800 como referência. Abaixo de 1280 encolhe até um piso (senão
+// estoura em celular); a partir de 1280 CRESCE de novo (senão fica sempre do tamanho
+// de 1280 mesmo numa tela bem maior — texto e cards ficam minúsculos perdidos no
+// meio da tela, que era exatamente o bug: o teto em 1 nunca deixava passar de lá).
+function uiScale(){
+  return VW < 1280
+    ? Math.max(0.68, Math.min(1, VW/480))
+    : Math.min(1.55, Math.min(VW/1280, VH/800));
+}
+function drawMenu(dt){
+  ctx.setTransform(1,0,0,1,0,0);
+  // ── Fundo: ilustração do deserto (assets/background.png), sempre "cover" —
+  // enche a tela toda sem distorcer, cortando sobra nas bordas. Precisa de
+  // suavização (a arte é pintada, não pixel-sprite) — desliga de novo depois,
+  // senão o resto do HUD (fonte bitmap etc.) fica borrado.
+  if(IMG.background){
+    ctx.imageSmoothingEnabled = true;
+    const bi = IMG.background, ir = bi.width/bi.height, vr = VW/VH;
+    let dw, dh, dx, dy;
+    if(vr > ir){ dw = VW; dh = dw/ir; dx = 0; dy = (VH-dh)/2; }
+    else { dh = VH; dw = dh*ir; dy = 0; dx = (VW-dw)/2; }
+    ctx.drawImage(bi, dx, dy, dw, dh);
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = 'rgba(10,6,16,.22)'; ctx.fillRect(0, 0, VW, VH);   // leve vinheta pra texto não brigar com o céu
+  } else {
+    const bg = ctx.createRadialGradient(VW/2, VH*0.3, 30, VW/2, VH*0.3, Math.max(VW,VH)*0.8);
+    bg.addColorStop(0, '#4a3527'); bg.addColorStop(1, '#17110d');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, VW, VH);
+  }
+
+  const S = uiScale();
+  const cx = VW/2;
+
+  // ── Chip de moedas: linha própria bem no topo, canto direito — fica numa faixa
+  // vertical SÓ dele, senão em tela estreita colide com o título grande. ──
+  const chH=42*S, chW=Math.max(104*S, bmpTextW(''+saveData.bank, 20*S)+66*S), chX=VW-chW-18*S, chY=14*S;
+  menuPulseT += dt;
+  const pulseK = menuPulseT<0.3 ? 1+0.14*Math.sin((menuPulseT/0.3)*Math.PI) : 1;
+  ctx.save(); ctx.translate(chX+chW/2, chY+chH/2); ctx.scale(pulseK, pulseK); ctx.translate(-chW/2, -chH/2);
+  drawMenuPanel(0, 0, chW, chH, chH*0.14, '#4a3a72', '#241733');
+  ctx.translate(23*S, chH/2); drawCoinShape(24*S); ctx.restore();
+  drawBmpText(saveData.bank, chX+chW-15*S, chY+chH/2, 20*S, {color:'#f4e6c0', align:'right'});
+
+  // ── Título ──
+  const titleY = chY+chH+58*S;
+  drawGameTitle(cx, titleY, 70*S, VW-36*S);
+
+  // faíscas subindo perto do título — mesmo clima do pôr do sol do fundo, dá vida
+  // à tela em vez de tudo estático.
+  for(let i=0;i<10;i++){
+    const seed = i*37.13;
+    const t = (menuAnimT*0.11 + (seed%1)) % 1;
+    const ex = cx + Math.sin(seed*3.1)*190*S;
+    const ey = titleY - 6*S - t*100*S;
+    const alpha = Math.sin(t*Math.PI) * 0.55;
+    ctx.fillStyle = 'rgba(255,190,110,'+alpha.toFixed(3)+')';
+    ctx.beginPath(); ctx.arc(ex, ey, (1+Math.sin(seed)*0.6)*S, 0, 6.283); ctx.fill();
+  }
+
+  const subSize = 15*S;
+  const lines = wrapBmpLines('ULTIMO MASCOTE DE PE VENCE - PEGUE ARMAS NO CHAO E FUJA DA TEMPESTADE', subSize, Math.min(620, VW-40));
+  const subY0 = titleY+30*S;
+  lines.forEach((ln,i)=> drawBmpText(ln, cx, subY0+i*20*S, subSize, {color:'#f0e6d8', align:'center'}));
+
+  // ── Card do personagem ──
+  const cardW=290*S, cardH=312*S, cardX=cx-cardW/2, cardY=subY0+lines.length*20*S+18*S, cardR=10*S;
+  drawMenuPanel(cardX, cardY, cardW, cardH, cardR, '#5a4580', '#281b42');
+  // vinheta interna — escurece os cantos, dá profundidade em vez de cor chapada
+  ctx.save();
+  roundRect(cardX, cardY, cardW, cardH, cardR); ctx.clip();
+  const vig = ctx.createRadialGradient(cx, cardY+cardH*0.42, cardW*0.1, cx, cardY+cardH*0.5, cardW*0.72);
+  vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, 'rgba(0,0,0,.4)');
+  ctx.fillStyle = vig; ctx.fillRect(cardX, cardY, cardW, cardH);
+  ctx.restore();
+
+  const ch = CHARACTERS[browseIdx], img = IMG[ch.sheet];
+  const pcx = cx, pfy = cardY+56*S;
+  ctx.fillStyle='rgba(0,0,0,.32)';
+  ctx.beginPath(); ctx.ellipse(pcx, pfy+74*S, 32*S, 9*S, 0, 0, 6.283); ctx.fill();
+  if(img){
+    const sc=4.2*S;
+    ctx.drawImage(img, menuFrame*SPR, ch.row*SPR, SPR, SPR, pcx-SPR*sc/2, pfy+74*S-SPR*sc*0.94, SPR*sc, SPR*sc);
+  }
+
+  // Nome dentro de uma pill própria — encolhe a fonte pra nomes longos (ex.: "Monstro
+  // da Tempestade") nunca estourarem a largura do card.
+  let nameSize = 16*S;
+  const nameMaxW = cardW-56*S;
+  const rawNameW = bmpTextW(ch.name, nameSize);
+  if(rawNameW > nameMaxW) nameSize *= nameMaxW/rawNameW;
+  const nameW = Math.min(cardW-30*S, bmpTextW(ch.name, nameSize)+40*S), nameH=32*S, nameX=cx-nameW/2, nameY=cardY+152*S;
+  drawMenuPanel(nameX, nameY, nameW, nameH, nameH/2, '#3a2a5c', '#201430');
+  drawBmpText(ch.name, cx, nameY+nameH/2, nameSize, {color:'#fff', align:'center'});
+
+  const owned = saveData.owned.includes(browseIdx);
+  const equipped = owned && saveData.selected === browseIdx;
+  const statusY = nameY+nameH+14*S;
+  menuHit.action = null;
+  if(equipped){
+    const pw=Math.max(130*S, bmpTextW('EQUIPADO',14*S)+76*S), ph=32*S, px=cx-pw/2;
+    ctx.save(); ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=10; ctx.shadowOffsetY=4;
+    const g=ctx.createLinearGradient(0,statusY,0,statusY+ph); g.addColorStop(0,'#5bbf46'); g.addColorStop(1,'#2f7a24');
+    roundRect(px,statusY,pw,ph,ph/2); ctx.fillStyle=g; ctx.fill();
+    ctx.restore();
+    ctx.save(); roundRect(px,statusY,pw,ph,ph/2); ctx.clip();
+    const hig=ctx.createLinearGradient(0,statusY,0,statusY+ph*0.5);
+    hig.addColorStop(0,'rgba(255,255,255,.3)'); hig.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=hig; ctx.fillRect(px,statusY,pw,ph*0.5);
+    ctx.restore();
+    roundRect(px,statusY,pw,ph,ph/2); ctx.strokeStyle='#1f5416'; ctx.lineWidth=2; ctx.stroke();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2.4; ctx.lineCap='round'; ctx.lineJoin='round';
+    const chkX=cx-bmpTextW('EQUIPADO',14*S)/2-16*S, chkY=statusY+ph/2;
+    ctx.beginPath(); ctx.moveTo(chkX-5*S,chkY); ctx.lineTo(chkX-1*S,chkY+4*S); ctx.lineTo(chkX+6*S,chkY-5*S); ctx.stroke();
+    drawBmpText('EQUIPADO', cx+8*S, statusY+ph/2, 14*S, {color:'#fff', align:'center'});
+  } else if(owned){
+    const pw=176*S, ph=36*S, px=cx-pw/2;
+    drawMenuPanel(px, statusY, pw, ph, ph/2, '#4a3a72', '#251834');
+    drawButtonLabel('SELECIONAR', cx, statusY+ph/2+1, 15*S, '#fff');
+    menuHit.action = {x:px, y:statusY, w:pw, h:ph, kind:'select'};
+  } else {
+    const afford = saveData.bank >= ch.price;
+    const priceStr = ''+ch.price, priceSize=15*S, iconSize=16*S, gap=5*S;
+    const groupW = iconSize+gap+bmpTextW(priceStr, priceSize), groupX0 = cx-groupW/2, rowY = statusY+iconSize/2;
+    ctx.save(); ctx.translate(groupX0+iconSize/2, rowY); drawCoinShape(iconSize); ctx.restore();
+    drawBmpText(priceStr, groupX0+iconSize+gap, rowY, priceSize, {color: afford?'#ffe9b0':'#a89bc0', align:'left'});
+    const pw=176*S, ph=36*S, px=cx-pw/2, py=statusY+iconSize+8*S;
+    if(afford) drawGoldButton(px, py, pw, ph, ph/2);
+    else { roundRect(px,py,pw,ph,ph/2); ctx.fillStyle='#382a4a'; ctx.fill();
+      roundRect(px,py,pw,ph,ph/2); ctx.strokeStyle='#5c4a78'; ctx.lineWidth=2; ctx.stroke(); }
+    drawButtonLabel('COMPRAR', cx, py+ph/2+1, 15*S, afford?'#fff8e8':'#8577a0');
+    if(!afford) drawBmpText('FALTAM '+(ch.price-saveData.bank), cx, py+ph+15*S, 10*S, {color:'#e39a7a', align:'center'});
+    menuHit.action = {x:px, y:py, w:pw, h:ph, kind:'buy'};
+  }
+
+  const arrSize=48*S, arrGap=18*S, arrY=cardY+cardH/2-arrSize/2;
+  drawMenuArrow(cardX-arrSize-arrGap, arrY, arrSize, -1);
+  drawMenuArrow(cardX+cardW+arrGap, arrY, arrSize, 1);
+  menuHit.prev = {x:cardX-arrSize-arrGap, y:arrY, w:arrSize, h:arrSize};
+  menuHit.next = {x:cardX+cardW+arrGap, y:arrY, w:arrSize, h:arrSize};
+
+  // ── Dots de paginação — mostram quantos personagens tem e qual está aberto ──
+  const dotY = cardY+cardH+20*S, dotGap=16*S, dotR=4.5*S;
+  const dots0 = cx-(CHARACTERS.length-1)*dotGap/2;
+  for(let i=0;i<CHARACTERS.length;i++){
+    ctx.beginPath(); ctx.arc(dots0+i*dotGap, dotY, dotR, 0, 6.283);
+    if(i===browseIdx){ ctx.fillStyle='#f4c95d'; ctx.fill(); }
+    else { ctx.strokeStyle='rgba(255,255,255,.45)'; ctx.lineWidth=1.5; ctx.stroke(); }
+  }
+
+  // ── Jogar ──
+  const pbW=240*S, pbH=62*S, pbX=cx-pbW/2, pbY=dotY+22*S;
+  drawGoldButton(pbX, pbY, pbW, pbH, 9*S);
+  const ornY = pbY+pbH/2;
+  [[pbX+22*S,'#7a4718'],[pbX+pbW-22*S,'#7a4718']].forEach(([ox])=>{
+    ctx.save(); ctx.translate(ox, ornY); ctx.rotate(Math.PI/4);
+    ctx.fillStyle='rgba(255,255,255,.55)'; ctx.fillRect(-2*S,-7*S,4*S,14*S); ctx.fillRect(-7*S,-2*S,14*S,4*S);
+    ctx.restore();
+  });
+  drawButtonLabel('JOGAR', cx, pbY+pbH/2+1, 26*S, '#fff8e8');
+  menuHit.play = {x:pbX, y:pbY, w:pbW, h:pbH};
+
+  // ── Transição íris fase 1 (fechando por cima do menu) — quando termina, dispara
+  // o start() de verdade, que já deixa preparada a fase 2 (abrindo, ver draw()). ──
+  if(jogarWipe){
+    jogarWipe.t += dt;
+    const k = Math.min(1, jogarWipe.t/jogarWipe.dur);
+    const e = Math.pow(k, 3);                 // ease-in: começa devagar, fecha rápido no fim
+    const r = Math.max(0, jogarWipe.maxR * (1-e));
+    drawIrisMask(jogarWipe.x, jogarWipe.y, r, 0.9*k);
+    if(jogarWipe.t >= jogarWipe.dur){
+      const {x, y} = jogarWipe;
+      jogarWipe = null;
+      start(x, y);
+    }
+  }
+}
+
+// ── Tela de morte/vitória — mesmo kit visual do menu (painel violeta com borda
+// dourada, título na fonte de sistema, botões com o mesmo relevo) pra não destoar
+// da tela inicial. Desenhada por cima do jogo (que continua rodando atrás na morte,
+// ou fica congelado num snapshot na vitória — ver showVictoryScreen). ──
+let endHit = {};
+// Label de botão: fonte de sistema em negrito + contorno sólido (nada de sombra
+// suave por trás) — contraste garantido em qualquer cor de fundo, e não compete
+// visualmente com a fonte bitmap "de dados" usada nos números/labels do HUD.
+function drawButtonLabel(str, cx, cy, size, color){
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '800 '+size+'px "Arial Black", Impact, "Segoe UI", sans-serif';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(15,8,8,.9)'; ctx.lineWidth = size*0.22;
+  ctx.strokeText(str, cx, cy);
+  ctx.fillStyle = color;
+  ctx.fillText(str, cx, cy);
+  ctx.restore();
+}
+function drawEndScreen(dt){
+  ctx.setTransform(1,0,0,1,0,0);
+  if(state==='won' && wonSnapshot) ctx.drawImage(wonSnapshot, 0, 0);
+  ctx.fillStyle = 'rgba(6,4,9,.7)';   // mais escuro que antes — texto sumia em cima de areia clara
+  ctx.fillRect(0, 0, VW, VH);
+
+  const S = uiScale();
+  const cx = VW/2, won = state==='won';
+
+  // Bloco inteiro (mascote + card + botões) centralizado na tela — antes ficava
+  // colado no topo e sobrava um vão vazio enorme embaixo em telas grandes.
+  const spriteH=150*S, cardW=360*S, cardH=118*S, gapB=30*S, btnH=60*S;
+  const totalH = spriteH + cardH + gapB + btnH;
+  const top = Math.max(20*S, (VH-totalH)/2);
+
+  // ── Mascote em vez de um título de texto — o MESMO bicho que você tava jogando,
+  // na pose de morto (ou de pé, na vitória), bem acima do card abaixo. A pose de
+  // morto é "deitada" (só ocupa a metade de baixo do quadro 24x24, o resto é
+  // transparente — ver assets/img/players_packed.png), então sem essa folga extra
+  // ela ficava visualmente grudada no card mesmo com a matemática de ancoragem certa.
+  const cardX=cx-cardW/2, cardY=top+spriteH;
+  const sc=4.6*S, spriteGap=30*S;
+  const pfy = cardY - spriteGap - SPR*sc*0.14;   // pé do sprite (onde a sombra fica) — SPR*sc*0.14
+                                                  // é a fatia do desenho que sobra ABAIXO do pé;
+                                                  // sem contar isso o card (desenhado por cima,
+                                                  // depois) cortava a base do bicho.
+  ctx.fillStyle='rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.ellipse(cx, pfy, 34*S, 9*S, 0, 0, 6.283); ctx.fill();
+  if(IMG[player.sheet]){
+    const frame = won ? 0 : PLAYER_DEAD;
+    ctx.drawImage(IMG[player.sheet], frame*SPR, player.skin*SPR, SPR, SPR, cx-SPR*sc/2, pfy-SPR*sc*0.86, SPR*sc, SPR*sc);
+  }
+
+  // ── Painel de estatísticas (mesmo visual do card de personagem do menu) ──
+  drawMenuPanel(cardX, cardY, cardW, cardH, 12*S, '#5a4580', '#281b42');
+  const mm=String(Math.floor(endElapsedT/60)).padStart(2,'0'), ss=String(Math.floor(endElapsedT%60)).padStart(2,'0');
+  const colW = cardW/3, capY = cardY+24*S, statY = cardY+cardH*0.62;
+  drawBmpText('ABATES', cardX+colW*0.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  if(IMG.interface) ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, cardX+colW*0.5-34*S, statY-14*S, 28*S, 28*S);
+  drawBmpText(kills, cardX+colW*0.5+8*S, statY, 24*S, {color:'#fff', align:'left'});
+  drawBmpText('MOEDAS', cardX+colW*1.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  ctx.save(); ctx.translate(cardX+colW*1.5-20*S, statY); drawCoinShape(22*S); ctx.restore();
+  drawBmpText(coins, cardX+colW*1.5+5*S, statY, 24*S, {color:'#fff', align:'left'});
+  drawBmpText('TEMPO', cardX+colW*2.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  drawPixelGlyph(GLYPH_HOURGLASS, cardX+colW*2.5-24*S, statY, 2.2*S, 'rgba(255,255,255,.9)');
+  drawBmpText(mm+':'+ss, cardX+colW*2.5-4*S, statY, 19*S, {color:'#fff', align:'left'});
+
+  // ── Botões: REVIVER (só morte, 1x por partida, até a zona REVIVE_ZONE_LIMIT) + NOVA PARTIDA ──
+  const canRevive = !won && !reviveUsed && zoneNum < REVIVE_ZONE_LIMIT;
+  const btnY = cardY+cardH+gapB;
+  endHit.revive = null; endHit.newgame = null;
+  if(canRevive){
+    // Largura dos dois juntos = largura do card, bem alinhados com as bordas
+    // (antes passavam pros dois lados — 190*2+18 > 360).
+    const gap=16*S, bw=(cardW-gap)/2, x0=cardX, x1=cardX+bw+gap;
+    drawColoredButton(x0, btnY, bw, btnH, 10*S, '#8bec6e','#4fa53a','#1f5416', '#a8d98f', '#173d10');
+    drawButtonLabel('REVIVER', x0+bw/2, btnY+btnH/2+1, 21*S, '#fff');
+    endHit.revive = {x:x0, y:btnY, w:bw, h:btnH};
+    drawGoldButton(x1, btnY, bw, btnH, 10*S);
+    drawButtonLabel('NOVA PARTIDA', x1+bw/2, btnY+btnH/2+1, 15*S, '#fff8e8');
+    endHit.newgame = {x:x1, y:btnY, w:bw, h:btnH};
+  } else {
+    const bw=cardW, x0=cardX;
+    drawGoldButton(x0, btnY, bw, btnH, 10*S);
+    drawButtonLabel('NOVA PARTIDA', cx, btnY+btnH/2+1, 20*S, '#fff8e8');
+    endHit.newgame = {x:x0, y:btnY, w:bw, h:btnH};
+  }
+}
+canvas.addEventListener('click', e=>{
+  if(jogarWipe) return;
+  const r=canvas.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(canvas.width/r.width), y=(e.clientY-r.top)*(canvas.height/r.height);
+  const hit = rc => rc && x>=rc.x && x<=rc.x+rc.w && y>=rc.y && y<=rc.y+rc.h;
+  if(state==='dead' || state==='won'){
+    if(hit(endHit.revive)){ revivePlayer(); return; }
+    if(hit(endHit.newgame)){ goToMenu(); return; }
+    return;
+  }
+  if(state!=='menu') return;
+  if(hit(menuHit.prev)){ browseIdx=(browseIdx-1+CHARACTERS.length)%CHARACTERS.length; return; }
+  if(hit(menuHit.next)){ browseIdx=(browseIdx+1)%CHARACTERS.length; return; }
+  if(hit(menuHit.play)){
+    const maxR = Math.hypot(Math.max(x,VW-x), Math.max(y,VH-y));
+    jogarWipe = { x, y, t:0, dur:0.32, maxR };
+    return;
+  }
+  if(hit(menuHit.action)){
+    const ch = CHARACTERS[browseIdx];
+    if(menuHit.action.kind==='select'){ saveData.selected = browseIdx; persistSaveData(); }
+    else if(menuHit.action.kind==='buy' && saveData.bank >= ch.price){
+      saveData.bank -= ch.price; saveData.owned.push(browseIdx); saveData.selected = browseIdx;
+      persistSaveData(); menuPulseT = 0;
+    }
+  }
+});
+// Volta pro menu/loja — bancariza as moedas da partida que terminou (morte ou vitória)
+// pra dar pra gastar num personagem novo antes da próxima; o state já vira 'menu' na
+// hora do clique, então não tem brecha de clique duplo bancarizando 2x.
+function goToMenu(){
+  if(state==='dead' || state==='won'){ saveData.bank += coins; persistSaveData(); menuPulseT = 0; }
+  state = 'menu';
+  browseIdx = saveData.selected;
+  wonSnapshot = null;
+  canvas.style.cursor = 'pointer';
+}
+
 //======================= LOOP / FLUXO =======================
 let state='menu', last=0;
 function frame(t){
-  const dt=Math.min(0.05,(t-last)/1000)||0; last=t;
-  // 'dead': o player já morreu, mas a partida continua rolando atrás do overlay
-  // (bots, zona, balas) — só o player para de responder a input.
+  const dt=Math.max(0,Math.min(0.05,(t-last)/1000))||0; last=t;
+  // 'dead': o player já morreu, mas a partida continua rolando atrás do painel
+  // (bots, zona, balas) — só o player para de responder a input. 'won': não tem mais
+  // ninguém pra lutar, então a imagem congela de vez (nem step nem draw rodam mais,
+  // ver wonSnapshot em showVictoryScreen).
   if(state==='playing' || state==='dead'){ step(dt); draw(); }
+  if(state==='dead' || state==='won'){ drawEndScreen(dt); }
+  else if(state==='menu'){
+    menuAnimT += dt;
+    menuFrame = 1 + (Math.floor(menuAnimT*8)%2);   // mesmo ritmo de passada do jogo (ver player.frame)
+    drawMenu(dt);
+  }
   requestAnimationFrame(frame);
 }
-function start(){
+function start(originX, originY){
   if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
   loadLevel();
-  elapsedT=0; kills=0; coins=0; coinPops=[]; matchWon=false; medkits=2; player.hp=100; player.armor=100;
+  elapsedT=0; kills=0; coins=0; coinPops=[]; matchWon=false; victoryTimer=-1; medkits=2; player.hp=100; player.armor=100;
   hpGhost=100; armorGhost=100;
   shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
   healAura=0; player.facaCooldown=0; player.facaSwingT=0;
+  reviveUsed=false; wonSnapshot=null;
+  const equipped = CHARACTERS[saveData.selected] || CHARACTERS[0];
+  player.sheet = equipped.sheet; player.skin = equipped.row;
   spawnEnemies();   // também posiciona o player — sorteia entre o mesmo pool de spawns dos bots
   cam.x=clamp(player.x-(VW/VIEW_SCALE)/2,0,Math.max(0,WORLD_W-VW/VIEW_SCALE));
   cam.y=clamp(player.y-(VH/VIEW_SCALE)/2,0,Math.max(0,WORLD_H-VH/VIEW_SCALE));
-  overlay.classList.add('hidden');
   canvas.style.cursor='none';  // custom crosshair
   initZones();
   state='playing'; last=performance.now();
+  const ox = originX ?? VW/2, oy = originY ?? VH/2;
+  const maxR = Math.hypot(Math.max(ox, VW-ox), Math.max(oy, VH-oy));
+  introWipe = { x:ox, y:oy, t:0, dur:0.6, maxR };
 }
-startBtn.addEventListener('click', start);
 
 //======================= DEBUG (verificação) =======================
 window.DBG=()=>({ state, p:{x:player.x|0,y:player.y|0,L:player.L,
@@ -4182,6 +4672,11 @@ window.__mouse=(down)=>{ mouse.down=down; };
 window.__enemies=()=>enemies.map(e=>({c:Math.floor(e.x/MTILE), r:Math.floor(e.y/MTILE), L:e.L,
   hp:e.hp, armor:e.armor, st:e.st, fsm:e.fsm, gun:e.gun, gunHeat:e.gunHeat, gunOverheat:e.gunOverheat}));
 window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
+window.__menuHit=()=>menuHit;
+window.__wipe=()=>({ state, jogarWipe: jogarWipe && {...jogarWipe}, introWipe: introWipe && {...introWipe}, now: performance.now() });
+window.__endHit=()=>endHit;
+window.__endState=()=>({ state, reviveUsed, zoneNum, kills, coins });
+window.__menu=()=>({browseIdx, saveData:JSON.parse(JSON.stringify(saveData))});
 
 //======================= BOOT =======================
 Promise.all([
@@ -4190,5 +4685,6 @@ Promise.all([
   loadImg('players','assets/img/players_packed.png'),
   loadImg('enemies','assets/img/enemies_packed.png'),
   loadImg('weapons','assets/img/weapons_packed.png'),
+  loadImg('background','assets/background.png'),
   fetch('map.json?t='+Date.now()).then(r=>r.ok?r.json():null).then(d=>{MAP=d;}).catch(()=>{MAP=null;}),
 ]).then(()=>{ requestAnimationFrame(frame); });
