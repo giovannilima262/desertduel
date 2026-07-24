@@ -269,10 +269,34 @@ const WEAPONS = {
   escopeta: { nome:'Escopeta', spr:7, auto:false, rate:0.90, pellets:6, spread:0.220, recoil:4.8, shake:1.7,  speed:30, flash:1.4,
               snd:{vol:0.14, body:0.20, f1:1100, f2:120, sub:0.12} },
   // ── Arma branca PASSIVA (golpe automático, ver updateMelee): não entra no ciclo
-  // de troca/disparo normal — `rate` aqui é o cooldown entre golpes.
-  faca:     { nome:'Faca', spr:8, dmg:40, range:MTILE*1.35, rate:5.0,
+  // de troca/disparo normal — `rate` aqui é o cooldown entre golpes. Cada tipo de
+  // personagem golpeia com uma delas (ver MELEE_BY_SKIN) — funcionam TODAS igual
+  // (mesmo dano/alcance/cadência/som), só o sprite muda; os machados (linha 2 da
+  // folha weapons) desenham um pouco maiores que as facas (`scale`), que é como a
+  // folha original já os diferencia. `row` = linha na folha weapons (24px), padrão 0.
+  faca:     { nome:'Faca',    spr:8, row:0, dmg:40, range:MTILE*1.35, rate:5.0,
+              snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
+  faca2:    { nome:'Faca',    spr:8, row:1, dmg:40, range:MTILE*1.35, rate:5.0,
+              snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
+  machado:  { nome:'Machado', spr:9, row:0, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
+              snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
+  machado2: { nome:'Machado', spr:9, row:1, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
               snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
 };
+// Qual arma branca cada personagem usa — chave é "sheet,row" (mesmo par usado em
+// CHARACTERS/ENEMY_SKINS): raposo = faca padrão, urso = a outra faca, lobo e coelho
+// = machado laranja, monstro = o outro machado.
+const MELEE_BY_SKIN = {
+  'players,0': 'faca',
+  'players,1': 'faca2',
+  'players,2': 'machado',
+  'players,3': 'machado',
+  'enemies,3': 'machado2',
+};
+function meleeIdFor(ent){
+  const row = ent===player ? ent.skin : ent.row;
+  return MELEE_BY_SKIN[ent.sheet+','+row] || 'faca';
+}
 let gun = 'pistola';        // arma atual do player
 let gunItems = [];          // armas colocadas no cenário (vindas do editor): {c,r,t,bob}
 // Dropa a arma de quem morreu no chão — só se não for a pistola inicial (senão o
@@ -426,9 +450,8 @@ let zoneBanner = null;                       // anúncio central: {text,sub,colo
 let zoneHitFlash = 0;                        // flash vermelho ao tomar dano da zona
 let swapAnim = null;         // animação de troca: {t, total} — tempo restante pro bounce
 // ── Faca automática: golpe passivo corpo-a-corpo, sem clique/decisão de IA — ver
-// updateMelee(). `meleeWeapon` existe à parte da arma equipada; trocar pro machado
-// no futuro é só apontar isto pra outra entrada de WEAPONS.
-let meleeWeapon = 'faca';
+// updateMelee(). Qual arma branca cada um usa vem de MELEE_BY_SKIN/meleeIdFor
+// (é por personagem, não uma escolha manual) — existe à parte da arma equipada.
 const MELEE_SWING_DUR = 0.32;   // duração visual do golpe (sprite varrendo o arco)
 let fireLatch = false;      // semi-auto: exige soltar o clique entre tiros
 let flashT = 0, flashAng = 0, flashMx = 0, flashMy = 0;  // muzzle flash (posição do cano no tiro)
@@ -1080,7 +1103,7 @@ function updateMelee(ent, dt, hostiles){
   ent.facaCooldown = Math.max(0, ent.facaCooldown - dt);
   ent.facaSwingT = Math.max(0, ent.facaSwingT - dt);
   if(ent.facaCooldown > 0) return;
-  const mw = WEAPONS[meleeWeapon];
+  const mw = WEAPONS[meleeIdFor(ent)];
   let target = null, targetIsCritter = false, bestD = mw.range;
   for(const h of hostiles){
     const d = Math.hypot(h.x-ent.x, (h.y-6)-(ent.y-6));
@@ -2545,9 +2568,9 @@ function segRectHit(x1,y1,x2,y2,rc){
 // Golpe da faca automática: só existe durante MELEE_SWING_DUR — a lâmina varre um
 // arco em torno do alvo (único frame estático, sem folha de animação própria, então
 // o "corte" é o sprite girando/deslocando rápido no arco, não uma troca de frame).
-function drawMeleeSwing(x, y, ang, swingT){
+function drawMeleeSwing(x, y, ang, swingT, weaponId){
   if(swingT<=0 || !IMG.weapons) return;
-  const mw = WEAPONS[meleeWeapon];
+  const mw = WEAPONS[weaponId] || WEAPONS.faca;
   const k = 1 - swingT/MELEE_SWING_DUR;           // 0→1 ao longo do golpe
   // Envelope de escala (cresce, segura, encolhe) e progresso do arco são
   // curvas SEPARADAS — o arco sempre termina de varrer (aos 60% do tempo) antes
@@ -2572,8 +2595,9 @@ function drawMeleeSwing(x, y, ang, swingT){
   ctx.save();
   ctx.translate(Math.cos(a1)*dist, Math.sin(a1)*dist);
   ctx.rotate(a1 + Math.PI/4);
-  ctx.scale(1.4, 1.4);
-  ctx.drawImage(IMG.weapons, mw.spr*SPR, 0, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
+  const bladeScale = 1.4 * (mw.scale||1);         // machados desenham um pouco maiores
+  ctx.scale(bladeScale, bladeScale);
+  ctx.drawImage(IMG.weapons, mw.spr*SPR, (mw.row||0)*SPR, SPR, SPR, -SPR/2, -SPR/2, SPR, SPR);
   ctx.restore();
   ctx.restore();
 }
@@ -3401,8 +3425,8 @@ function draw(){
 	    // ── Golpe de faca: passe FINAL, por cima de todo mundo (player e bots) — se
 	    // desenhasse junto com cada sprite, quem fosse desenhado DEPOIS (ordem de loop)
 	    // cobria o corte de quem golpeou antes.
-	    if(!playerHidden && player.hp>0) drawMeleeSwing(player.x, player.y-6, player.facaSwingAng, player.facaSwingT);
-	    for(const e of visibleAlive) drawMeleeSwing(e.x, e.y-6, e.facaSwingAng, e.facaSwingT);
+	    if(!playerHidden && player.hp>0) drawMeleeSwing(player.x, player.y-6, player.facaSwingAng, player.facaSwingT, meleeIdFor(player));
+	    for(const e of visibleAlive) drawMeleeSwing(e.x, e.y-6, e.facaSwingAng, e.facaSwingT, meleeIdFor(e));
 	  }
 
 
@@ -4164,7 +4188,7 @@ function drawSlots(){
   // ── Slot extra: faca automática — passiva (sem tecla, golpeia sozinha por
   // proximidade), por isso o card fica cinza (não "ativo" como o slot 1) com uma
   // tag AUTO e uma barra de cooldown carregando embaixo.
-  const mw = WEAPONS[meleeWeapon];
+  const mw = WEAPONS[meleeIdFor(player)];
   const facaPct = 1 - player.facaCooldown/mw.rate;   // 0 = acabou de golpear, 1 = pronta
   drawCard(s0X, s0Y, s0W, s0H, UI_CARD.gray, 10);
   ctx.strokeStyle = facaPct>=1 ? 'rgba(242,193,78,.55)' : 'rgba(255,255,255,.18)';
@@ -4173,7 +4197,10 @@ function drawSlots(){
   ctx.save();
   ctx.imageSmoothingEnabled=false;
   if(facaPct<1) ctx.globalAlpha=0.5;
-  if(IMG.weapons) ctx.drawImage(IMG.weapons, mw.spr*SPR, 0, SPR, SPR, s0X+s0W/2-20, s0Y+s0H/2-26, 40, 40);
+  {
+    const isz = 40*(mw.scale||1);   // machados desenham um pouco maiores, também no HUD
+    if(IMG.weapons) ctx.drawImage(IMG.weapons, mw.spr*SPR, (mw.row||0)*SPR, SPR, SPR, s0X+s0W/2-isz/2, s0Y+s0H/2-26*(mw.scale||1), isz, isz);
+  }
   ctx.restore();
   const atW=34;
   ctx.fillStyle='#47324b'; roundRect(s0X+s0W/2-atW/2, s0Y+7, atW, 14, 4); ctx.fill();
@@ -4387,12 +4414,31 @@ function drawMenu(dt){
   ctx.restore();
 
   const ch = CHARACTERS[browseIdx], img = IMG[ch.sheet];
-  const pcx = cx, pfy = cardY+56*S;
+  const pcx = cx, pfy = cardY+56*S, sc = 4.2*S;
   ctx.fillStyle='rgba(0,0,0,.32)';
   ctx.beginPath(); ctx.ellipse(pcx, pfy+74*S, 32*S, 9*S, 0, 0, 6.283); ctx.fill();
   if(img){
-    const sc=4.2*S;
     ctx.drawImage(img, menuFrame*SPR, ch.row*SPR, SPR, SPR, pcx-SPR*sc/2, pfy+74*S-SPR*sc*0.94, SPR*sc, SPR*sc);
+  }
+
+  // ── Selo da arma branca desse personagem — canto superior direito do sprite ──
+  if(IMG.weapons){
+    const meleeId = MELEE_BY_SKIN[ch.sheet+','+ch.row] || 'faca';
+    const mw = WEAPONS[meleeId];
+    const spriteTop = pfy+74*S-SPR*sc*0.94, spriteHalfW = SPR*sc/2;
+    const bx = pcx+spriteHalfW-8*S, by = spriteTop+10*S, br = 17*S;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(bx, by, br, 0, 6.283);
+    ctx.fillStyle = '#2a1b42'; ctx.fill();
+    const gb = ctx.createLinearGradient(0, by-br, 0, by+br);
+    gb.addColorStop(0, '#f9e6a8'); gb.addColorStop(1, '#8a5f1c');
+    ctx.lineWidth = 2.4*S; ctx.strokeStyle = gb; ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath(); ctx.arc(bx, by, br-3*S, 0, 6.283); ctx.clip();
+    const isc = (br*1.6*(mw.scale||1))/SPR;
+    ctx.drawImage(IMG.weapons, mw.spr*SPR, (mw.row||0)*SPR, SPR, SPR, bx-SPR*isc/2, by-SPR*isc/2, SPR*isc, SPR*isc);
+    ctx.restore();
   }
 
   // Nome dentro de uma pill própria — encolhe a fonte pra nomes longos (ex.: "Monstro
