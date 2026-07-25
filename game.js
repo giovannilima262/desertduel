@@ -4683,7 +4683,10 @@ function start(originX, originY){
   hpGhost=100; armorGhost=100;
   shieldRechargeTimer=0; prevHp=100;
   gunHeat=0; gunOverheat=false; overheatFlash=0;
+  fireLatch=false; recoilForce=0; swapAnim=null;
+  overlapGun=-1;                // sem isso o jogador podia "pisar" numa arma no frame 1 e pegá-la automaticamente
   healAura=0; player.facaCooldown=0; player.facaSwingT=0;
+  gun='pistola';                // toda partida NOVA começa do zero — sem arrastar a arma da partida anterior
   reviveUsed=false; wonSnapshot=null;
   const equipped = CHARACTERS[saveData.selected] || CHARACTERS[0];
   player.sheet = equipped.sheet; player.skin = equipped.row;
