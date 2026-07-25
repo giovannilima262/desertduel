@@ -3089,6 +3089,8 @@ let playerKiller = null;   // quem matou o player (pra focar nele primeiro)
 // escondida, e o círculo ABRE de novo revelando o mundo (introWipe).
 let jogarWipe = null;    // fase 1 (fechando, sobre o menu) — {x,y,t,dur,maxR}
 let introWipe = null;    // fase 2 (abrindo, sobre o jogo) — {x,y,t,dur,maxR}
+let deathWipe = null;    // fase 1 (fechando, sobre a tela de morte) — {x,y,t,dur,maxR}
+let menuWipe  = null;    // fase 2 (abrindo, sobre o menu de volta)
 // Máscara compartilhada pelas duas fases — um "buraco" redondo na tela toda,
 // com o anel dourado brilhando na borda enquanto anima.
 function drawIrisMask(x, y, r, ringAlpha){
@@ -4532,6 +4534,17 @@ function drawMenu(dt){
       start(x, y);
     }
   }
+
+  // ── Transição de chegada (círculo ABRINDO por cima do menu, vindo da tela de
+  // morte) — mesmo ease-out + anel dourado do introWipe do jogo. ──
+  if(menuWipe){
+    menuWipe.t += dt;
+    const k = Math.min(1, menuWipe.t/menuWipe.dur);
+    const e = 1-Math.pow(1-k, 3);
+    const r = Math.max(0, menuWipe.maxR * e);
+    drawIrisMask(menuWipe.x, menuWipe.y, r, k<1 ? 0.9*(1-k) : 0);
+    if(menuWipe.t >= menuWipe.dur) menuWipe = null;
+  }
 }
 
 // ── Tela de morte/vitória — mesmo kit visual do menu (painel violeta com borda
@@ -4620,15 +4633,36 @@ function drawEndScreen(dt){
     drawButtonLabel('NOVA PARTIDA', cx, btnY+btnH/2+1, 20*S, '#fff8e8');
     endHit.newgame = {x:x0, y:btnY, w:bw, h:btnH};
   }
+
+  // ── Transição de saída (fecha o círculo por cima da tela de morte, igual ao
+  // JOGAR mas no caminho inverso — da morte de volta pro menu) ──
+  if(deathWipe){
+    deathWipe.t += dt;
+    const k = Math.min(1, deathWipe.t/deathWipe.dur);
+    const e = Math.pow(k, 3);
+    const r = Math.max(0, deathWipe.maxR * (1-e));
+    drawIrisMask(deathWipe.x, deathWipe.y, r, 0.9*k);
+    if(deathWipe.t >= deathWipe.dur){
+      const {x, y} = deathWipe;
+      deathWipe = null;
+      goToMenu();                           // troca de estado aqui — drawMenu() roda a partir do próximo frame
+      const mR = Math.hypot(Math.max(x, VW-x), Math.max(y, VH-y));
+      menuWipe = { x, y, t:0, dur:0.6, maxR: mR };
+    }
+  }
 }
 canvas.addEventListener('click', e=>{
-  if(jogarWipe) return;
+  if(jogarWipe || deathWipe || menuWipe) return;
   const r=canvas.getBoundingClientRect();
   const x=(e.clientX-r.left)*(canvas.width/r.width), y=(e.clientY-r.top)*(canvas.height/r.height);
   const hit = rc => rc && x>=rc.x && x<=rc.x+rc.w && y>=rc.y && y<=rc.y+rc.h;
   if(state==='dead' || state==='won'){
     if(hit(endHit.revive)){ revivePlayer(); return; }
-    if(hit(endHit.newgame)){ goToMenu(); return; }
+    if(hit(endHit.newgame)){
+      const maxR = Math.hypot(Math.max(x, VW-x), Math.max(y, VH-y));
+      deathWipe = { x, y, t:0, dur:0.32, maxR };
+      return;
+    }
     return;
   }
   if(state!=='menu') return;
@@ -4722,7 +4756,7 @@ window.__enemies=()=>enemies.map(e=>({c:Math.floor(e.x/MTILE), r:Math.floor(e.y/
   hp:e.hp, armor:e.armor, st:e.st, fsm:e.fsm, gun:e.gun, gunHeat:e.gunHeat, gunOverheat:e.gunOverheat}));
 window.__aim=(wx,wy)=>{ mouse.sx=(wx-cam.x)*VIEW_SCALE; mouse.sy=(wy-cam.y)*VIEW_SCALE; };
 window.__menuHit=()=>menuHit;
-window.__wipe=()=>({ state, jogarWipe: jogarWipe && {...jogarWipe}, introWipe: introWipe && {...introWipe}, now: performance.now() });
+window.__wipe=()=>({ state, jogarWipe: jogarWipe && {...jogarWipe}, introWipe: introWipe && {...introWipe}, deathWipe: deathWipe && {...deathWipe}, menuWipe: menuWipe && {...menuWipe}, now: performance.now() });
 window.__endHit=()=>endHit;
 window.__endState=()=>({ state, reviveUsed, zoneNum, kills, coins });
 window.__menu=()=>({browseIdx, saveData:JSON.parse(JSON.stringify(saveData))});
