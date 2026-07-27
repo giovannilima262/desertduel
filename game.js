@@ -45,11 +45,11 @@ function blitMap(t,x,y){
 // primeira é a mascote padrão (grátis, já "dona"); as outras se compram com moedas
 // guardadas entre partidas (ver saveData/persistSaveData).
 const CHARACTERS = [
-  { sheet:'players', row:0, name:'Raposo do Deserto',      price:0 },
-  { sheet:'players', row:1, name:'Urso Xerife',             price:300 },
-  { sheet:'players', row:2, name:'Lobo Solitário',          price:600 },
-  { sheet:'players', row:3, name:'Coelho Fugitivo',         price:900 },
-  { sheet:'enemies',  row:3, name:'Monstro da Tempestade',  price:1500 },
+  { sheet:'players', row:0, name:'Desert Fox',      price:0 },
+  { sheet:'players', row:1, name:'Sheriff Bear',    price:300 },
+  { sheet:'players', row:2, name:'Lone Wolf',       price:600 },
+  { sheet:'players', row:3, name:'Fugitive Rabbit', price:900 },
+  { sheet:'enemies',  row:3, name:'Storm Monster',  price:1500 },
 ];
 const SAVE_KEY = 'dd_save_v1';   // moedas guardadas + skins compradas — sobrevive a partidas/recargas
 function loadSaveData(){
@@ -252,7 +252,7 @@ canvas.addEventListener('mouseup',()=>{ mouse.down=false; });
 // ── ARMAS: cada uma com seu próprio recuo, cadência, spread, som e flash ──
 // spr = coluna na linha 0 da folha weapons (24px). auto = segurar atira.
 const WEAPONS = {
-  pistola:  { nome:'Pistola',  spr:0, auto:false, rate:0.32, pellets:1, spread:0.020, recoil:2.0, shake:0.7,  speed:35, flash:0.8,
+  pistola:  { nome:'Pistol',   spr:0, auto:false, rate:0.32, pellets:1, spread:0.020, recoil:2.0, shake:0.7,  speed:35, flash:0.8,
               snd:{vol:0.09, body:0.10, f1:1800, f2:200, sub:0.06} },
   magnum:   { nome:'Magnum',   spr:1, auto:false, rate:0.50, pellets:1, spread:0.012, recoil:3.6, shake:1.3,  speed:40, flash:1.1,
               snd:{vol:0.12, body:0.14, f1:1400, f2:150, sub:0.09} },
@@ -260,13 +260,13 @@ const WEAPONS = {
               snd:{vol:0.05, body:0.06, f1:2200, f2:400, sub:0.03} },
   sniper:   { nome:'Sniper',   spr:3, auto:false, rate:1.15, pellets:1, spread:0.000, recoil:5.5, shake:2.0,  speed:55, flash:1.5,
               snd:{vol:0.16, body:0.28, f1:900,  f2:80,  sub:0.14} },
-  carabina: { nome:'Carabina', spr:4, auto:true,  rate:0.16, pellets:1, spread:0.050, recoil:1.7, shake:0.6,  speed:36, flash:0.8,
+  carabina: { nome:'Carbine',  spr:4, auto:true,  rate:0.16, pellets:1, spread:0.050, recoil:1.7, shake:0.6,  speed:36, flash:0.8,
               snd:{vol:0.08, body:0.09, f1:2000, f2:300, sub:0.05} },
-  fuzil:    { nome:'Fuzil',    spr:5, auto:true,  rate:0.125,pellets:1, spread:0.065, recoil:2.2, shake:0.85, speed:38, flash:0.9,
+  fuzil:    { nome:'Rifle',    spr:5, auto:true,  rate:0.125,pellets:1, spread:0.065, recoil:2.2, shake:0.85, speed:38, flash:0.9,
               snd:{vol:0.09, body:0.11, f1:1700, f2:250, sub:0.07} },
   smg:      { nome:'SMG',      spr:6, auto:true,  rate:0.09, pellets:1, spread:0.120, recoil:1.0, shake:0.3,  speed:30, flash:0.55,
               snd:{vol:0.045,body:0.05, f1:2400, f2:500, sub:0.025} },
-  escopeta: { nome:'Escopeta', spr:7, auto:false, rate:0.90, pellets:6, spread:0.220, recoil:4.8, shake:1.7,  speed:30, flash:1.4,
+  escopeta: { nome:'Shotgun',  spr:7, auto:false, rate:0.90, pellets:6, spread:0.220, recoil:4.8, shake:1.7,  speed:30, flash:1.4,
               snd:{vol:0.14, body:0.20, f1:1100, f2:120, sub:0.12} },
   // ── Arma branca PASSIVA (golpe automático, ver updateMelee): não entra no ciclo
   // de troca/disparo normal — `rate` aqui é o cooldown entre golpes. Cada tipo de
@@ -274,13 +274,13 @@ const WEAPONS = {
   // (mesmo dano/alcance/cadência/som), só o sprite muda; os machados (linha 2 da
   // folha weapons) desenham um pouco maiores que as facas (`scale`), que é como a
   // folha original já os diferencia. `row` = linha na folha weapons (24px), padrão 0.
-  faca:     { nome:'Faca',    spr:8, row:0, dmg:40, range:MTILE*1.35, rate:5.0,
+  faca:     { nome:'Knife',   spr:8, row:0, dmg:40, range:MTILE*1.35, rate:5.0,
               snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
-  faca2:    { nome:'Faca',    spr:8, row:1, dmg:40, range:MTILE*1.35, rate:5.0,
+  faca2:    { nome:'Knife',   spr:8, row:1, dmg:40, range:MTILE*1.35, rate:5.0,
               snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
-  machado:  { nome:'Machado', spr:9, row:0, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
+  machado:  { nome:'Axe',     spr:9, row:0, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
               snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
-  machado2: { nome:'Machado', spr:9, row:1, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
+  machado2: { nome:'Axe',     spr:9, row:1, scale:1.28, dmg:40, range:MTILE*1.35, rate:5.0,
               snd:{vol:0.07, body:0.05, f1:2600, f2:900, sub:0.02} },
 };
 // Qual arma branca cada personagem usa — chave é "sheet,row" (mesmo par usado em
@@ -434,7 +434,7 @@ function coinCollectSound(atten=1){
     o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.16);
   });
 }
-const PLAYER_NAME = '★ você';
+const PLAYER_NAME = '★ you';
 let killFeed = [];                   // {victim,killer,t,dur} — mini chat de abates no canto esquerdo
 const KILL_FEED_DUR = 6;            // segundos que cada entrada fica visível
 let hpGhost = 100, armorGhost = 50; // trilha "fantasma" das barras (dano recente escorre)
@@ -1251,7 +1251,9 @@ let deathGunSnapshot = 'pistola';   // arma que tava na mão na hora da morte �
 // limite que os reforços de bots já usam, ver RESPAWN_ZONE_LIMIT) — depois disso é
 // tarde demais pra valer a pena continuar de onde morreu.
 let reviveUsed = false;
+let deathTimer = 0;                    // segundos restantes pra reviver — 0 = expirou
 const REVIVE_ZONE_LIMIT = 8;
+const DEATH_REVIVE_TIMEOUT = 30;       // janela de 30s pra decidir se revive ou não
 // Cronômetro do card de stats na tela de morte/vitória: precisa TRAVAR no instante
 // da morte (elapsedT global continua correndo — bots e zona seguem vivos atrás do
 // painel) senão o "TEMPO" fica contando por conta própria enquanto você decide se
@@ -1263,6 +1265,7 @@ function killPlayer(killer){
   deathGunSnapshot = gun;
   player.hp = 0; player.moving = false; player.frame = PLAYER_DEAD; state = 'dead';
   endElapsedT = elapsedT;
+  deathTimer = DEATH_REVIVE_TIMEOUT;    // corrida contra o relógio — 30s pra decidir reviver
   dropWeaponOnDeath(player.x, player.y, gun);
   pushKillFeed(player, killer);
   playerKiller = killer && killer.st==='alive' ? killer : null;
@@ -1272,8 +1275,8 @@ function killPlayer(killer){
 // Reviver exatamente onde morreu, com a arma de antes — abates/moedas/tempo continuam
 // (é a mesma partida, só que sem passar pelo spawn de novo).
 function revivePlayer(){
-  if(state !== 'dead' || reviveUsed || zoneNum >= REVIVE_ZONE_LIMIT) return;
-  reviveUsed = true;
+  if(state !== 'dead' || reviveUsed || deathTimer <= 0 || zoneNum >= REVIVE_ZONE_LIMIT) return;
+  reviveUsed = true; deathTimer = 0;
   player.hp = 100; player.armor = 100;
   hpGhost = 100; armorGhost = 100;
   shieldRechargeTimer = 0; prevHp = 100;
@@ -1364,56 +1367,57 @@ const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:40, carabina:4, fuzil:5, 
 // único (sniper) valem mais que a conta crua sugere, então o ranking é curado.
 const WEAPON_TIER = { pistola:1, escopeta:2, smg:2, magnum:3, carabina:3, uzi:3, sniper:4, fuzil:4 };
 const weaponScore = id => { const w=WEAPONS[id]; return w.pellets*(GUN_DMG[id]||10)/w.rate; };
-// ── Nomes BR pros bots (200+ criativos com special chars) ──
-const BR_NAMES=[
-'☠️xX_BalaPerdida_Xx','ツTiroCerteiro','⚡RaioSupremo','🩸SangueFrio','💀OssosDoOfício',
-'VaiDeBase','CaiuN⊚Coffin','snipeGODツ','🔥Churrasqueiro','🌀Fura-Tempestade',
-'LAG_KILLER','30fps_Gamer','x√-1_C4P4','MarcolaRush','SentaAPuaBR',
-'ZéDropaTudo','TioDoChurras','PavãoArmado','KidBengala','AlemãoBrabo',
-'G3X_M4T4D0R','CamperNoob','RatoDeSpawn','Viper_X7','Ghost_Pepper',
-'☢RadioAtivo','Fênix☄Caída','CarniçaNinja','ToxinaVoadora','MoshPitBullet',
-'CapivaraSlow','RAGE_QUITTER','PneuQueimado','M0RTO_antes_de_entrar','CascaDeBala',
-'PuxaFerro','FarofaArmada','DerrubaMuro','TripéTático','🔪NaGarganta',
-'CacetinhoArmado','GuriDasGaláxias','xX_Capeta_Xx','PistoleiroPapudo','BalaDePrata',
-'Dragão_Felpudo','Strike_Fake','MãoDeVaca','PoeiraCósmica','V8_Bicudo',
-'ToalhaMolhada','AsaNoturna','DocinhoAzedo','PapaLéguasSilencioso','CavaloDeTróiaBR',
-'🔫DuZonaSul','RojãoTetudo','SapãoCaronte','BailarinaDaMorte','AcerolaNinja',
-'OgroSonolento','GalinhaArmada','MuralhaChinesa','PanteraCoringa','CorvoNoturnoBR',
-'TrovãoSilencioso','MinhocaAtômica','CaranguejoElétrico','jacaré.aéreo','☕CaféPreto',
-'ZumbiNutella','CaixaDeLeite','MotocaDeLenha','Dr0p4d0r4','BiliscadaBR',
-'SalsichaArmada','R@T0_DE_ESG0T0','PipocoDoBem','GriloFalanteツ','BruxaDoSertão',
-'FerrugemTática','VentaniaNoturna','LagartixaNuclear','PirataDeAsfalto','MáquinaDeVento',
-'CapoteBR','RachaBucho','FogueteSemRé','GatoDeBotas⚔','BolebaMortal',
-'Xulipa_AtôMica','DedoNoGatilho','TresOitãoLoko','PamonhaAssassina','FamíliaBala',
-'🌀TormentaSeco','CarniçaCity','MotoSerraVoadora','BarataTonta☢','PomboBombado',
-'RespingoBR','FrangoCamper','DedoDuroDoLeste','Pipoco_Strike','CupimDeAço',
-'SabugoNuclear','ZéDoPneu','MarmitaFria','CalçaJeansRasgada','PéDeChinelo',
-'OgroBR','CarcaráSniper','PitúAtomico','RuimDeMira','MochilaDeLata',
-'BacamarteTorto','FaroleiroCego','PernaDePau','CuspidorDeBala','RedeMortalBR',
-'TatarugaNinja','Arroba_Trovao','PoteDeMorte','ForróNoInferno','RemendoTático',
-'GuaxinimSupremo','Vulgo_Batatinha','DesviadorDeBala','🔧ChaveInglesa','CristalNoturno',
-'CalangoVoador','PeixeEnsaboado','Malvadeza_007','ÓdioSanguessuga','RachaCucaBR',
-'AbacaxiDeFuzil','CamaleãoCaído','BarrilDePólvora','MorteLentaBR','🦴OssoDuro',
-'PistolaDeBrinquedo','RachaMói','MoluscoContra-Ataca','R@bã0','TiburcioArmado',
-'PneumoniaLetal','CatracaVoadora','ZéDasCouves','GolpeBaixoツ','PipocaDoMal',
-'BolebaSniper','NervosãoDeAço','SovaqueiraBR','AranhaDeAço','♿CadeiraElétrica',
-'XaropeDaMorte','DedãoPodre','CrocsComGelo','ChineloVoador','TorresmoQuente',
-'BodeElétrico','FumaçaSemFogo','LasanhaDeChumbo','PeidãoSônico','TrapelaBR',
-'Gambiarra_Pro','PiresVoador','NhoqueDaMorte','MarrecoArmado','FoiceCega',
-'JavaliFantasma','PicoléDeLimão','Catapimba','SacoDeAreia','RelâmpaG0_BR',
-'BanquetaTática','GalinhoCaipira','CarroçaNinja','BafoDeOnça','LesmaBaleada',
-'RaiTreta','CanudoNuclear','PãoComBala','ÍndioDeFuzil','TubarãoVoador',
-'PreguiçaAtômica','MacacoLocoツ','BonecoDePiche','SerraElétrica☠','FubáLetal',
-'PernaCabeluda','TrucoBaleado','PamonhaDeAço','CandiruElétrico','SinoDaMorte',
-'PistolinhaTorta','FuraOlhoBR','🦴CarcaçaVelha','GalinhaDagua','PoeiraRadioativa',
-'ReiDasPipas','PudimDeChumbo','VéioDoBar','SurfistaDeBala','ChavãoNuclear',
-'BOLOLO_H4H4','PéDeMoleque','BexigaVoadora','GarfoDeAço','CaboDaciolo⚡',
-'EsqueletoVivo','BolinhaDeGude','CaldoDeCanaArmado','TiroDeMisericórdia','MiojoAtômico',
+// ── Nomes dos bots (200+ criativos com special chars) ──
+const BOT_NAMES=[
+'☠️xX_StrayShot_Xx','ヅHeadshotHank','⚡SupremeBolt','🩸ColdBlood','💀BoneCollector',
+'GoAllIn','DiedInACoffin','snipeGODヅ','🔥GrillMaster','🌀StormPiercer',
+'LAG_KILLER','30fps_Gamer','x√-1_H4X0R','RushMcGee','SatOnTheCactus',
+'JoeDropsAll','BBQ_Uncle','PeacockArmed','KidNunchuck','GermanBrute',
+'G3X_M4T3R','CamperNoob','SpawnRat','Viper_X7','Ghost_Pepper',
+'☢RadioActive','Phoenix☄Fallen','VultureNinja','FlyingToxin','MoshPitBullet',
+'SlowCapybara','RAGE_QUITTER','FlatTire','D3AD_before_spawn','BulletShell',
+'IronPuller','StuffedArmed','WallBreaker','TacticalTripod','🔪ThroatSlit',
+'LilClubArmed','xX_Boogeyman_Xx','ChubGunslinger','SilverBullet','DraggedFluffy',
+'Strike_Fake','ButterHands','CosmicDust','V8_Beak','WetTowel',
+'NightWing','SourCandy','SilentRoadrunner','xX_TrojanHorse_Xx','🔫SouthSideGuy',
+'FatFirework','HitchhikerToad','DeathBallerina','NinjaCherry','SleepyOgre',
+'ArmedChicken','GreatWallDefender','JokerPanther','NightRavenX','SilentThunder',
+'AtomicWorm','ElectricCrab','gator.aerial','☕BlackCoffee','NutellaZombie',
+'MilkCarton','WoodMoped','Dr0p4d0r4','PinchedByFate','ArmedSausage',
+'R@T_FROM_THE_SEWER','GoodPopcorn','RambleToadヅ','DesertWitch','TacticalRust',
+'NightWindstorm','NuclearGecko','AsphaltPirate','WindMachine','LongOvercoat',
+'GutPunch','NoReverseRocket','BootedCat⚔','DeadlyPinball','AtomicShoelace',
+'TriggerFinger','ThreeShotLoko','KillerTamale','BulletFamily','🌀DryStorm',
+'CarrionCity','FlyingChainsaw','DizzyRoach☢','BombedPigeon','RespawnRider',
+'CamperChicken','EastSideSnitch','PopcornStrike','SteelTermite','NuclearCorncob',
+'TirePete','ColdLunchbox','RippedJeans','SlipperFoot','OgreOnTheLoose',
+'SniperVulture','AtomicShrimp','BadAimBuddy','TinBackpack','CrookedBlunderbuss',
+'BlindLighthouse','PegLeg','BulletSpitter','DeadlyDragnet','NinjaTortoise',
+'Arroba_Thunder','DeathPotStew','HellPolka','TacticalPatch','RaccoonSupreme',
+'Vulgo_Tato','BulletDodger','🔧WrenchThrower','NightCrystal','FlyingLizard',
+'SoapyFish','Malice_007','LeechHate','PineappleRifle','FallenChameleon',
+'GunpowderKeg','SlowDeathBrew','🦴HardBone','ToyPistol','GrindItOut',
+'ClamCounter','R@bã0','ArmedTiburon','LethalPneumonia','FlyingTurnstile',
+'CabbagePatchJoe','LowBlowヅ','EvilPopcorn','BolebaSniper','RustyNerves',
+'SweatyPitStain','SteelSpider','♿ElectricChair','DeathSyrup','RottenThumb',
+'CrocsWithIce','FlyingFlipFlop','HotCracklin','ElectricGoat','SmokeNoFire',
+'LeadLasagna','SonicToot','SlippedOnIt','Gambiarra_Pro','FlyingSaucer',
+'DeathNoodle','ArmedMallard','BluntSickle','GhostBoar','LemonPopsicle',
+'Catapimba','SandbagSam','RelâmpaG0_X','TacticalStool','CountryChick',
+'NinjaWagon','LionBreath','BeachedSlug','DramaQueen','NuclearStraw',
+'BreadWithBullets','RifleRanger','FlyingShark','AtomicSloth','LazyMonkeyヅ',
+'TarDummy','ElectricSaw☠','LethalCornmeal','HairyLeg','KnockedOutTruco',
+'SteelPamonha','ElectricCatfish','DeathBell','CrookedLilPistol','ScratchedEye',
+'🦴OldCarcass','WaterHen','RadioactiveDust','KiteKingpin','LeadPudding',
+'OldManBar','BulletSurfer','NuclearSlang','BOLOLO_H4H4','StreetKid',
+'FlyingBladder','SteelForkFred','CaboDaciolo⚡','LivingSkeleton','MarbleBall',
+'CaneJuiceArmed','MercyShot','AtomicRamen','NoodleNinja','ScrapMetalMax',
+'PickleSlicer','SwampWraith','TumbleweedTerror','RustBucketRiot','CactusJuggler',
 ];
 let usedNames=[];   // nomes já sorteados nesta partida (sem repetir)
 let nameIdx=0;       // próximo índice livre em usedNames (spawn inicial E reforços depois)
 function nextBotName(){
-  if(nameIdx >= usedNames.length){ usedNames = shuffleInPlace([...BR_NAMES]); nameIdx = 0; }
+  if(nameIdx >= usedNames.length){ usedNames = shuffleInPlace([...BOT_NAMES]); nameIdx = 0; }
   return usedNames[nameIdx++];
 }
 
@@ -1454,7 +1458,7 @@ function spawnEnemies(){
   enemies = [];
   killFeed = [];
   spectator = null; playerKiller = null;
-  usedNames = shuffleInPlace([...BR_NAMES]);
+  usedNames = shuffleInPlace([...BOT_NAMES]);
   nameIdx = 0;
   const spawnIdx = collectSpawnPoints(TOTAL_COMBATANTS);
   shuffleInPlace(spawnIdx);
@@ -1673,7 +1677,7 @@ function drawCritter(cr){
 
 function pushKillFeed(victim, killer){
   const vn = victim===player ? PLAYER_NAME : (victim.nome||'?');
-  const kn = killer==='player' ? PLAYER_NAME : (killer && killer.nome ? killer.nome : 'a zona');
+  const kn = killer==='player' ? PLAYER_NAME : (killer && killer.nome ? killer.nome : 'the zone');
   killFeed.push({victim:vn, killer:kn, t:0, dur:KILL_FEED_DUR, isPlayer:(victim===player||killer==='player')});
   // Mantém só as 8 mais recentes — mini chat limitado
   while(killFeed.length > 8) killFeed.shift();
@@ -2700,7 +2704,7 @@ function initZones(){
   zoneCurrent = {cx, cy, r};
   generateNextZone();
   zoneState = 'waiting'; zoneTimer = 30;  // primeira safe mais rápida
-  showZoneBanner('ZONA 1/'+MAX_ZONES, 'primeira zona fecha em 30s', '#f2c14e');
+  showZoneBanner('ZONE 1/'+MAX_ZONES, 'first zone closes in 30s', '#f2c14e');
 }
 function generateNextZone(){
   if(!zoneCurrent || zoneNum >= MAX_ZONES - 1) return;  // última zona = final
@@ -2736,14 +2740,14 @@ function updateZone(dt){
       // Última safe: fecha até quase zero
       zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
       zoneState = 'final'; zoneTimer = ZONE_FINAL; zoneNext = null;
-      showZoneBanner('ZONA FINAL', 'sem área segura — lute!', '#ff4630');
+      showZoneBanner('FINAL ZONE', 'no safe area — fight!', '#ff4630');
       return;
     }
     // Começa a fechar — guarda estado inicial pra interpolar
     zoneShrinkFrom = {cx:zoneCurrent.cx, cy:zoneCurrent.cy, r:zoneCurrent.r};
     zoneShrinkDur = zoneNum >= MAX_ZONES - 4 ? ZONE_SHRINK_FAST : ZONE_SHRINK;
     zoneState = 'shrinking'; zoneTimer = zoneShrinkDur;
-    showZoneBanner('A ZONA ESTÁ FECHANDO', 'corra para a área segura', '#ff8c3c');
+    showZoneBanner('THE ZONE IS CLOSING', 'run to the safe area', '#ff8c3c');
   } else if(zoneState==='final'){
     // Fechamento derradeiro: raio vai até ~1 tile
     const t = clamp(1 - zoneTimer/ZONE_FINAL, 0, 1);
@@ -2762,7 +2766,7 @@ function updateZone(dt){
       zoneState = zoneNext ? 'waiting' : 'final';
       zoneTimer = ZONE_WAIT;
       if(zoneState==='waiting')
-        showZoneBanner('ZONA '+(zoneNum+1)+'/'+MAX_ZONES, 'próxima zona em '+ZONE_WAIT+'s', '#f2c14e');
+        showZoneBanner('ZONE '+(zoneNum+1)+'/'+MAX_ZONES, 'next zone in '+ZONE_WAIT+'s', '#f2c14e');
     }
   }
   // FX da zona (banner, flash, partículas da tempestade)
@@ -2779,7 +2783,7 @@ function updateZone(dt){
         const dmg = zoneNum < 5 ? 1 : 1 + (zoneNum - 4);  // 1 até zona 6, depois escala
         player.hp -= dmg;
         zoneHitFlash = 1;
-        if(player.hp <= 0) killPlayer('a zona');
+        if(player.hp <= 0) killPlayer('the zone');
       }
     } else {
       zoneDmgTimer = 0;
@@ -3847,7 +3851,7 @@ function drawMinimap(){
     drawCard(zx, py, zw, zh, zCard, 10);
 
     // Header: label + ícone de status (menor, no topo direito)
-    drawBmpText('ZONA', zx+14, py+10, 12, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText('ZONE', zx+14, py+10, 12, {color:'rgba(255,255,255,.75)', valign:'top'});
     ctx.save(); ctx.translate(zx+zw-20, py+19);
     drawZoneIcon(0, 0, zIcon, 'rgb(255,255,255)');
     ctx.restore();
@@ -3898,7 +3902,7 @@ function drawMinimap(){
     // ── VIVOS (esquerda) ──
     const vx=panelX, vy=py;
     drawCard(vx, vy, tw2, th, UI_CARD.gray, 8);
-    drawBmpText('VIVOS', vx+12, vy+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText('ALIVE', vx+12, vy+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
     drawBmpText((player.hp>0?1:0)+enemies.filter(e=>e.st==='alive').length, vx+12, vy+21, 23, {color:'#fff', valign:'top'});
     // Ícone: a mesma seta do jogador (bússola/topo da cabeça) — reaproveita o motivo do próprio jogo
     const hx=vx+tw2-19, hy=vy+th/2+3;
@@ -3911,7 +3915,7 @@ function drawMinimap(){
     const tx=panelX+tw2+6, ty=py;
     drawCard(tx, ty, tw2, th, UI_CARD.gray, 8);
     const mm=String(Math.floor(elapsedT/60)).padStart(2,'0'), ss=String(Math.floor(elapsedT%60)).padStart(2,'0');
-    drawBmpText('TEMPO', tx+12, ty+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
+    drawBmpText('TIME', tx+12, ty+9, 11, {color:'rgba(255,255,255,.75)', valign:'top'});
     drawBmpText(mm+':'+ss, tx+12, ty+23, 18, {color:'#fff', valign:'top'});
     // Ampulheta em blocos + grão de areia caindo pelo gargalo (só retas, sem círculo)
     const icx=tx+tw2-19, icy=ty+th/2+3;
@@ -4400,7 +4404,7 @@ function drawMenu(dt){
   }
 
   const subSize = 15*S;
-  const lines = wrapBmpLines('ULTIMO MASCOTE DE PE VENCE - PEGUE ARMAS NO CHAO E FUJA DA TEMPESTADE', subSize, Math.min(620, VW-40));
+  const lines = wrapBmpLines('LAST MASCOT STANDING WINS - GRAB GUNS OFF THE GROUND - OUTRUN THE STORM', subSize, Math.min(620, VW-40));
   const subY0 = titleY+30*S;
   lines.forEach((ln,i)=> drawBmpText(ln, cx, subY0+i*20*S, subSize, {color:'#f0e6d8', align:'center'}));
 
@@ -4458,7 +4462,7 @@ function drawMenu(dt){
   const statusY = nameY+nameH+14*S;
   menuHit.action = null;
   if(equipped){
-    const pw=Math.max(130*S, bmpTextW('EQUIPADO',14*S)+76*S), ph=32*S, px=cx-pw/2;
+    const pw=Math.max(130*S, bmpTextW('EQUIPPED',14*S)+76*S), ph=32*S, px=cx-pw/2;
     ctx.save(); ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=10; ctx.shadowOffsetY=4;
     const g=ctx.createLinearGradient(0,statusY,0,statusY+ph); g.addColorStop(0,'#5bbf46'); g.addColorStop(1,'#2f7a24');
     roundRect(px,statusY,pw,ph,ph/2); ctx.fillStyle=g; ctx.fill();
@@ -4470,13 +4474,13 @@ function drawMenu(dt){
     ctx.restore();
     roundRect(px,statusY,pw,ph,ph/2); ctx.strokeStyle='#1f5416'; ctx.lineWidth=2; ctx.stroke();
     ctx.strokeStyle='#fff'; ctx.lineWidth=2.4; ctx.lineCap='round'; ctx.lineJoin='round';
-    const chkX=cx-bmpTextW('EQUIPADO',14*S)/2-16*S, chkY=statusY+ph/2;
+    const chkX=cx-bmpTextW('EQUIPPED',14*S)/2-16*S, chkY=statusY+ph/2;
     ctx.beginPath(); ctx.moveTo(chkX-5*S,chkY); ctx.lineTo(chkX-1*S,chkY+4*S); ctx.lineTo(chkX+6*S,chkY-5*S); ctx.stroke();
-    drawBmpText('EQUIPADO', cx+8*S, statusY+ph/2, 14*S, {color:'#fff', align:'center'});
+    drawBmpText('EQUIPPED', cx+8*S, statusY+ph/2, 14*S, {color:'#fff', align:'center'});
   } else if(owned){
     const pw=176*S, ph=36*S, px=cx-pw/2;
     drawMenuPanel(px, statusY, pw, ph, ph/2, '#4a3a72', '#251834');
-    drawButtonLabel('SELECIONAR', cx, statusY+ph/2+1, 15*S, '#fff');
+    drawButtonLabel('SELECT', cx, statusY+ph/2+1, 15*S, '#fff');
     menuHit.action = {x:px, y:statusY, w:pw, h:ph, kind:'select'};
   } else {
     const afford = saveData.bank >= ch.price;
@@ -4488,8 +4492,8 @@ function drawMenu(dt){
     if(afford) drawGoldButton(px, py, pw, ph, ph/2);
     else { roundRect(px,py,pw,ph,ph/2); ctx.fillStyle='#382a4a'; ctx.fill();
       roundRect(px,py,pw,ph,ph/2); ctx.strokeStyle='#5c4a78'; ctx.lineWidth=2; ctx.stroke(); }
-    drawButtonLabel('COMPRAR', cx, py+ph/2+1, 15*S, afford?'#fff8e8':'#8577a0');
-    if(!afford) drawBmpText('FALTAM '+(ch.price-saveData.bank), cx, py+ph+15*S, 10*S, {color:'#e39a7a', align:'center'});
+    drawButtonLabel('BUY', cx, py+ph/2+1, 15*S, afford?'#fff8e8':'#8577a0');
+    if(!afford) drawBmpText('NEED '+(ch.price-saveData.bank), cx, py+ph+15*S, 10*S, {color:'#e39a7a', align:'center'});
     menuHit.action = {x:px, y:py, w:pw, h:ph, kind:'buy'};
   }
 
@@ -4517,7 +4521,7 @@ function drawMenu(dt){
     ctx.fillStyle='rgba(255,255,255,.55)'; ctx.fillRect(-2*S,-7*S,4*S,14*S); ctx.fillRect(-7*S,-2*S,14*S,4*S);
     ctx.restore();
   });
-  drawButtonLabel('JOGAR', cx, pbY+pbH/2+1, 26*S, '#fff8e8');
+  drawButtonLabel('PLAY', cx, pbY+pbH/2+1, 26*S, '#fff8e8');
   menuHit.play = {x:pbX, y:pbY, w:pbW, h:pbH};
 
   // ── Transição íris fase 1 (fechando por cima do menu) — quando termina, dispara
@@ -4603,39 +4607,40 @@ function drawEndScreen(dt){
   drawMenuPanel(cardX, cardY, cardW, cardH, 12*S, '#5a4580', '#281b42');
   const mm=String(Math.floor(endElapsedT/60)).padStart(2,'0'), ss=String(Math.floor(endElapsedT%60)).padStart(2,'0');
   const colW = cardW/3, capY = cardY+24*S, statY = cardY+cardH*0.62;
-  drawBmpText('ABATES', cardX+colW*0.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  drawBmpText('KILLS', cardX+colW*0.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
   if(IMG.interface) ctx.drawImage(IMG.interface, 1*16, 3*16, 16, 16, cardX+colW*0.5-34*S, statY-14*S, 28*S, 28*S);
   drawBmpText(kills, cardX+colW*0.5+8*S, statY, 24*S, {color:'#fff', align:'left'});
-  drawBmpText('MOEDAS', cardX+colW*1.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  drawBmpText('COINS', cardX+colW*1.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
   ctx.save(); ctx.translate(cardX+colW*1.5-20*S, statY); drawCoinShape(22*S); ctx.restore();
   drawBmpText(coins, cardX+colW*1.5+5*S, statY, 24*S, {color:'#fff', align:'left'});
-  drawBmpText('TEMPO', cardX+colW*2.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
+  drawBmpText('TIME', cardX+colW*2.5, capY, 12*S, {color:'rgba(255,255,255,.7)', align:'center'});
   drawPixelGlyph(GLYPH_HOURGLASS, cardX+colW*2.5-24*S, statY, 2.2*S, 'rgba(255,255,255,.9)');
   drawBmpText(mm+':'+ss, cardX+colW*2.5-4*S, statY, 19*S, {color:'#fff', align:'left'});
 
-  // ── Botões: REVIVER (só morte, 1x por partida, até a zona REVIVE_ZONE_LIMIT) + NOVA PARTIDA ──
-  const canRevive = !won && !reviveUsed && zoneNum < REVIVE_ZONE_LIMIT;
-  const btnY = cardY+cardH+gapB;
-  endHit.revive = null; endHit.newgame = null;
-  if(canRevive){
-    // Largura dos dois juntos = largura do card, bem alinhados com as bordas
-    // (antes passavam pros dois lados — 190*2+18 > 360).
-    const gap=16*S, bw=(cardW-gap)/2, x0=cardX, x1=cardX+bw+gap;
-    drawColoredButton(x0, btnY, bw, btnH, 10*S, '#8bec6e','#4fa53a','#1f5416', '#a8d98f', '#173d10');
-    drawButtonLabel('REVIVER', x0+bw/2, btnY+btnH/2+1, 21*S, '#fff');
-    endHit.revive = {x:x0, y:btnY, w:bw, h:btnH};
-    drawGoldButton(x1, btnY, bw, btnH, 10*S);
-    drawButtonLabel('NOVA PARTIDA', x1+bw/2, btnY+btnH/2+1, 15*S, '#fff8e8');
-    endHit.newgame = {x:x1, y:btnY, w:bw, h:btnH};
-  } else {
-    const bw=cardW, x0=cardX;
-    drawGoldButton(x0, btnY, bw, btnH, 10*S);
-    drawButtonLabel('NOVA PARTIDA', cx, btnY+btnH/2+1, 20*S, '#fff8e8');
-    endHit.newgame = {x:x0, y:btnY, w:bw, h:btnH};
-  }
-
-  // ── Transição de saída (fecha o círculo por cima da tela de morte, igual ao
-  // JOGAR mas no caminho inverso — da morte de volta pro menu) ──
+	  // ── Buttons: REVIVE (death only, 1x per match, up to zone limit,
+	  //   and only within the DEATH_REVIVE_TIMEOUT window) + NEW GAME ──
+	  if(!won){ deathTimer = Math.max(0, deathTimer - dt); }
+	  const canRevive = !won && !reviveUsed && deathTimer > 0 && zoneNum < REVIVE_ZONE_LIMIT;
+	  const secs = Math.ceil(deathTimer);
+	  const btnY = cardY+cardH+gapB;
+	  endHit.revive = null; endHit.newgame = null;
+	  if(canRevive){
+	    const gap=16*S, bw=(cardW-gap)/2, x0=cardX, x1=cardX+bw+gap;
+	    drawColoredButton(x0, btnY, bw, btnH, 10*S, '#8bec6e','#4fa53a','#1f5416', '#a8d98f', '#173d10');
+	    const label = secs <= 10 ? 'REVIVE ('+secs+')' : 'REVIVE';
+	    drawButtonLabel(label, x0+bw/2, btnY+btnH/2+1, secs <= 10 ? 19*S : 21*S, '#fff');
+	    endHit.revive = {x:x0, y:btnY, w:bw, h:btnH};
+	    drawGoldButton(x1, btnY, bw, btnH, 10*S);
+	    drawButtonLabel('NEW GAME', x1+bw/2, btnY+btnH/2+1, 15*S, '#fff8e8');
+	    endHit.newgame = {x:x1, y:btnY, w:bw, h:btnH};
+	  } else {
+	    const bw=cardW, x0=cardX;
+	    drawGoldButton(x0, btnY, bw, btnH, 10*S);
+	    drawButtonLabel('NEW GAME', cx, btnY+btnH/2+1, 20*S, '#fff8e8');
+	    endHit.newgame = {x:x0, y:btnY, w:bw, h:btnH};
+	  }
+	  // ── Exit transition (closes circle over death screen, same as PLAY
+	  // but from death back to menu) ──
   if(deathWipe){
     deathWipe.t += dt;
     const k = Math.min(1, deathWipe.t/deathWipe.dur);
@@ -4711,7 +4716,7 @@ function frame(t){
   requestAnimationFrame(frame);
 }
 function start(originX, originY){
-  if(!MAP){ alert('map.json não carregou — salve o mapa no editor primeiro.'); return; }
+  if(!MAP){ alert('map.json failed to load — save the map in the editor first.'); return; }
   loadLevel();
   elapsedT=0; kills=0; coins=0; coinPops=[]; matchWon=false; victoryTimer=-1; medkits=2; player.hp=100; player.armor=100;
   hpGhost=100; armorGhost=100;
@@ -4721,7 +4726,7 @@ function start(originX, originY){
   overlapGun=-1;                // sem isso o jogador podia "pisar" numa arma no frame 1 e pegá-la automaticamente
   healAura=0; player.facaCooldown=0; player.facaSwingT=0;
   gun='pistola';                // toda partida NOVA começa do zero — sem arrastar a arma da partida anterior
-  reviveUsed=false; wonSnapshot=null;
+  reviveUsed=false; deathTimer=0; wonSnapshot=null;
   const equipped = CHARACTERS[saveData.selected] || CHARACTERS[0];
   player.sheet = equipped.sheet; player.skin = equipped.row;
   spawnEnemies();   // também posiciona o player — sorteia entre o mesmo pool de spawns dos bots
