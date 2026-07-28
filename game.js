@@ -52,18 +52,37 @@ const CHARACTERS = [
   { sheet:'enemies',  row:3, name:'Storm Monster',  price:1500 },
 ];
 const SAVE_KEY = 'dd_save_v1';   // moedas guardadas + skins compradas — sobrevive a partidas/recargas
+function parseSaveData(raw){
+  const d = JSON.parse(raw);
+  let owned = Array.isArray(d.owned) ? d.owned.filter(i=>Number.isInteger(i) && i>=0 && i<CHARACTERS.length) : [];
+  if(!owned.includes(0)) owned.push(0);
+  let selected = Number.isInteger(d.selected) ? d.selected : 0;
+  if(!owned.includes(selected)) selected = 0;
+  return { bank: Math.max(0, d.bank|0), owned, selected };
+}
 function loadSaveData(){
-  try{
-    const d = JSON.parse(localStorage.getItem(SAVE_KEY));
-    let owned = Array.isArray(d.owned) ? d.owned.filter(i=>Number.isInteger(i) && i>=0 && i<CHARACTERS.length) : [];
-    if(!owned.includes(0)) owned.push(0);   // skin 0 é sempre dona (padrão grátis)
-    let selected = Number.isInteger(d.selected) ? d.selected : 0;
-    if(!owned.includes(selected)) selected = 0;
-    return { bank: Math.max(0, d.bank|0), owned, selected };
-  }catch(e){ return { bank:0, owned:[0], selected:0 }; }
+  try{ return parseSaveData(localStorage.getItem(SAVE_KEY)); }catch(e){ return { bank:0, owned:[0], selected:0 }; }
 }
 let saveData = loadSaveData();
-function persistSaveData(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(saveData)); }catch(e){} }
+function persistSaveData(){
+  const json = JSON.stringify(saveData);
+  // localStorage — sempre funciona, fallback offline
+  try{ localStorage.setItem(SAVE_KEY, json); }catch(e){}
+  // CrazyGames cloud save — disponível quando o jogo roda na plataforma deles
+  if(typeof SDK !== 'undefined' && SDK.data && SDK.data.setItem){
+    SDK.data.setItem(SAVE_KEY, json).catch(()=>{});
+  }
+}
+// Tenta carregar da nuvem do CrazyGames — se vier algo mais recente, sobrescreve
+// o que estava no localStorage (ex: jogador trocou de navegador ou dispositivo).
+function syncFromCloud(){
+  if(typeof SDK !== 'undefined' && SDK.data && SDK.data.getItem){
+    SDK.data.getItem(SAVE_KEY).then(v=>{
+      if(!v) return;
+      try{ saveData = parseSaveData(v); }catch(e){}
+    }).catch(()=>{});
+  }
+}
 
 function blitMapMato(t,x,y,rot){
   // Draw a tile with wind sway — pivots from bottom-center.
@@ -3627,6 +3646,8 @@ function vitalBar(x,y,w,h,val,ghost,max,c1,c2,slant){
   // Contorno
   slantBar(x,y,w,h,slant); ctx.strokeStyle='rgba(255,255,255,.28)'; ctx.lineWidth=1; ctx.stroke();
 }
+// Fator de encolhimento do HUD no mobile: mesma lógica do uiScale() do menu —
+// sem isso o card de vitais de 332px encosta na borda direita em telas de 390px.
 function drawBars(){
   const T=performance.now()/1000;
   // ═══ Cartão de vitais (canto inferior esquerdo) ═══
@@ -4775,4 +4796,11 @@ Promise.all([
   loadImg('weapons','assets/img/weapons_packed.png'),
   loadImg('background','assets/background.png'),
   fetch('map.json?t='+Date.now()).then(r=>r.ok?r.json():null).then(d=>{MAP=d;}).catch(()=>{MAP=null;}),
-]).then(()=>{ requestAnimationFrame(frame); });
+]).then(()=>{
+  // CrazyGames: sync cloud save on boot & signal the SDK we're ready
+  syncFromCloud();
+  if(typeof SDK!=='undefined' && SDK.game && SDK.game.loadingStop){
+    SDK.game.loadingStop();
+  }
+  requestAnimationFrame(frame);
+});
