@@ -464,7 +464,7 @@ function coinCollectSound(atten=1){
     const o=audioCtx.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(f,t+d);
     const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
     g.gain.exponentialRampToValueAtTime(0.09*atten,t+d+0.01); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.14);
-    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.16);
+    o.connect(g); g.connect(masterGain); o.start(t+d); o.stop(t+d+0.16);
   });
 }
 const PLAYER_NAME = '★ you';
@@ -892,16 +892,39 @@ function step(dt){
 
 // Synth gunshot sound — layered for a punchy pixel-art feel (Web Audio, no files)
 let audioCtx=null;
+// masterGain fica entre TODO som sintetizado e a saída — um único nó pra ligar/desligar
+// tudo de uma vez, sem precisar tocar em cada função de som. É como o mute do painel
+// de configurações da CrazyGames (SDK.game.settings.muteAudio) consegue silenciar o
+// jogo inteiro sem o jogo saber de cada oscillator individualmente (ver applySdkMute).
+let masterGain=null;
+let sdkMuted=false;
 // Alguns navegadores (Safari/iOS em especial) criam o AudioContext já "suspended"
 // mesmo dentro do gesto de clique — sem isso o som simplesmente não toca, sem erro
 // nenhum no console. resume() é seguro de chamar sempre (no-op se já tiver rodando).
 function ensureAudio(){
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if(!audioCtx){
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    masterGain=audioCtx.createGain();
+    masterGain.gain.value = sdkMuted ? 0 : 1;
+    masterGain.connect(masterGain);
+  }
   if(audioCtx.state==='suspended') audioCtx.resume();
   return audioCtx;
 }
+function applySdkMute(muted){
+  sdkMuted = !!muted;
+  if(masterGain) masterGain.gain.value = sdkMuted ? 0 : 1;
+}
 addEventListener('pointerdown', ensureAudio);
 addEventListener('keydown', ensureAudio);
+// Lê o mute atual assim que o SDK estiver pronto e escuta mudanças (o jogador pode
+// mutar pelo painel da CrazyGames a qualquer momento, não só na tela de loading).
+withSDK(sdk=>{
+  if(sdk.game && sdk.game.settings) applySdkMute(sdk.game.settings.muteAudio);
+  if(sdk.game && sdk.game.addSettingsChangeListener){
+    sdk.game.addSettingsChangeListener(settings => applySdkMute(settings.muteAudio));
+  }
+});
 // Clique de UI (menu/tela de morte) — "tap" seco e curto, com um segundo tom mais
 // grave pro hover/nav (setas de personagem) pra diferenciar de uma ação "forte" (comprar/jogar).
 function uiClickSound(kind='tap'){
@@ -917,7 +940,7 @@ function uiClickSound(kind='tap'){
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t);
     const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t);
     g.gain.exponentialRampToValueAtTime(vol,t+0.008); g.gain.exponentialRampToValueAtTime(0.0001,t+0.09);
-    o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.1);
+    o.connect(g); g.connect(masterGain); o.start(t); o.stop(t+0.1);
   });
 }
 // Alcance de audição de tiro alheio (~50 "metros" = 50 tiles) e o quanto mais abafado
@@ -941,7 +964,7 @@ function gunSound(s, atten=1){
   // ── Sharp attack click (firing pin) ──
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(2400,t); clk.frequency.exponentialRampToValueAtTime(600,t+0.01);
   const cg=audioCtx.createGain(); cg.gain.setValueAtTime(vol*0.9,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.015);
-  clk.connect(cg); cg.connect(audioCtx.destination);
+  clk.connect(cg); cg.connect(masterGain);
   clk.start(t); clk.stop(t+0.015);
   // ── Noise body (the "bang") ──
   const len=s.body, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
@@ -951,12 +974,12 @@ function gunSound(s, atten=1){
   const gain=audioCtx.createGain(); gain.gain.setValueAtTime(vol,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(s.f1,t); bp.frequency.exponentialRampToValueAtTime(s.f2,t+len);
   bp.Q.setValueAtTime(1.2,t);
-  src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
+  src.connect(bp); bp.connect(gain); gain.connect(masterGain);
   src.start(t); src.stop(t+len);
   // ── Sub punch ──
   const osc=audioCtx.createOscillator(); osc.type='sine'; osc.frequency.setValueAtTime(90,t); osc.frequency.exponentialRampToValueAtTime(25,t+0.05);
   const og=audioCtx.createGain(); og.gain.setValueAtTime(sub,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.05);
-  osc.connect(og); og.connect(audioCtx.destination);
+  osc.connect(og); og.connect(masterGain);
   osc.start(t); osc.stop(t+0.05);
 }
 function footstepSound(){
@@ -968,7 +991,7 @@ function footstepSound(){
   const src=audioCtx.createBufferSource(); src.buffer=buf;
   const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.03,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(300,t);
-  src.connect(lp); lp.connect(gain); gain.connect(audioCtx.destination);
+  src.connect(lp); lp.connect(gain); gain.connect(masterGain);
   src.start(t); src.stop(t+len);
 }
 function pickupSound(atten=1){
@@ -978,7 +1001,7 @@ function pickupSound(atten=1){
   // Click metálico (armar)
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(800,t); clk.frequency.exponentialRampToValueAtTime(200,t+0.04);
   const cg=audioCtx.createGain(); cg.gain.setValueAtTime(0.05*atten,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.05);
-  clk.connect(cg); cg.connect(audioCtx.destination);
+  clk.connect(cg); cg.connect(masterGain);
   clk.start(t); clk.stop(t+0.05);
   // Ruído mecânico (corrediça)
   const len=0.06, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
@@ -987,7 +1010,7 @@ function pickupSound(atten=1){
   const src=audioCtx.createBufferSource(); src.buffer=buf;
   const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.04*atten,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.setValueAtTime(2000,t);
-  src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+  src.connect(hp); hp.connect(gain); gain.connect(masterGain);
   src.start(t); src.stop(t+len);
 }
 function chestSound(atten=1){
@@ -999,7 +1022,7 @@ function chestSound(atten=1){
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
     const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
     g.gain.exponentialRampToValueAtTime(0.09*atten,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.18);
-    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.2);
+    o.connect(g); g.connect(masterGain); o.start(t+d); o.stop(t+d+0.2);
   });
 }
 function overheatSound(){
@@ -1013,18 +1036,19 @@ function overheatSound(){
   const gain=audioCtx.createGain(); gain.gain.setValueAtTime(0.09,t); gain.gain.exponentialRampToValueAtTime(0.001,t+len);
   const hp=audioCtx.createBiquadFilter(); hp.type='highpass';
   hp.frequency.setValueAtTime(3600,t); hp.frequency.exponentialRampToValueAtTime(1200,t+len);
-  src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+  src.connect(hp); hp.connect(gain); gain.connect(masterGain);
   src.start(t); src.stop(t+len);
   const o=audioCtx.createOscillator(); o.type='triangle';
   o.frequency.setValueAtTime(560,t); o.frequency.exponentialRampToValueAtTime(110,t+0.30);
   const og=audioCtx.createGain(); og.gain.setValueAtTime(0.06,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.32);
-  o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t+0.32);
+  o.connect(og); og.connect(masterGain); o.start(t); o.stop(t+0.32);
 }
 const CRITTER_DIE_SFX = new Audio('assets/sfx/hurt-c.ogg');
 function critterSquishSound(atten=1){
   // arquivo gravado (hurt-c) em vez de síntese — clona pra permitir sobrepor
-  // se mais de um bicho morrer no mesmo instante.
-  if(atten<=0) return;
+  // se mais de um bicho morrer no mesmo instante. Fica fora do grafo do Web Audio
+  // (masterGain), então precisa checar o mute do SDK na mão.
+  if(atten<=0 || sdkMuted) return;
   const a = CRITTER_DIE_SFX.cloneNode(true);
   a.volume = Math.min(1, atten/OTHER_GUNSHOT_VOLUME) * 0.1;
   a.play().catch(()=>{});
@@ -1037,7 +1061,7 @@ function enemyHitSound(atten=1){
   const o=audioCtx.createOscillator(); o.type='square';
   o.frequency.setValueAtTime(340,t); o.frequency.exponentialRampToValueAtTime(120,t+0.07);
   const g=audioCtx.createGain(); g.gain.setValueAtTime(0.07*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
-  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.08);
+  o.connect(g); g.connect(masterGain); o.start(t); o.stop(t+0.08);
 }
 function enemyDieSound(atten=1){
   // tom descendo (desinflando) + ruído de baque + thump grave (peso extra no impacto)
@@ -1047,20 +1071,20 @@ function enemyDieSound(atten=1){
   const o=audioCtx.createOscillator(); o.type='triangle';
   o.frequency.setValueAtTime(520,t); o.frequency.exponentialRampToValueAtTime(60,t+0.28);
   const g=audioCtx.createGain(); g.gain.setValueAtTime(0.10*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.30);
-  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.30);
+  o.connect(g); g.connect(masterGain); o.start(t); o.stop(t+0.30);
   const len=0.12, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.2));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
   const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.08*atten,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
   const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.setValueAtTime(500,t);
-  src.connect(lp); lp.connect(ng); ng.connect(audioCtx.destination);
+  src.connect(lp); lp.connect(ng); ng.connect(masterGain);
   src.start(t); src.stop(t+len);
   // Thump grave — dá peso ao golpe fatal (mesma ideia do "sub punch" do tiro)
   const sub=audioCtx.createOscillator(); sub.type='sine';
   sub.frequency.setValueAtTime(115,t); sub.frequency.exponentialRampToValueAtTime(28,t+0.16);
   const subg=audioCtx.createGain(); subg.gain.setValueAtTime(0.16*atten,t); subg.gain.exponentialRampToValueAtTime(0.001,t+0.16);
-  sub.connect(subg); subg.connect(audioCtx.destination); sub.start(t); sub.stop(t+0.16);
+  sub.connect(subg); subg.connect(masterGain); sub.start(t); sub.stop(t+0.16);
 }
 function killCollectSound(){
   // "Ding" de abate confirmado: arpejo curto e brilhante + brilho agudo — toca quando a caveira chega no contador
@@ -1070,13 +1094,13 @@ function killCollectSound(){
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
     const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t+d);
     g.gain.exponentialRampToValueAtTime(0.11,t+d+0.015); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.16);
-    o.connect(g); g.connect(audioCtx.destination); o.start(t+d); o.stop(t+d+0.18);
+    o.connect(g); g.connect(masterGain); o.start(t+d); o.stop(t+d+0.18);
   });
   const o2=audioCtx.createOscillator(); o2.type='sine';
   o2.frequency.setValueAtTime(2400,t+0.02); o2.frequency.exponentialRampToValueAtTime(3200,t+0.12);
   const g2=audioCtx.createGain(); g2.gain.setValueAtTime(0.0001,t+0.02);
   g2.gain.exponentialRampToValueAtTime(0.035,t+0.03); g2.gain.exponentialRampToValueAtTime(0.001,t+0.2);
-  o2.connect(g2); g2.connect(audioCtx.destination); o2.start(t+0.02); o2.stop(t+0.22);
+  o2.connect(g2); g2.connect(masterGain); o2.start(t+0.02); o2.stop(t+0.22);
 }
 function enemyShieldBreakSound(atten=1){
   // Escudo quebrando: zap elétrico descendo + estouro de vidro + tinidos agudos dos cacos
@@ -1087,21 +1111,21 @@ function enemyShieldBreakSound(atten=1){
   o.frequency.setValueAtTime(1400,t); o.frequency.exponentialRampToValueAtTime(180,t+0.22);
   const g=audioCtx.createGain(); g.gain.setValueAtTime(0.08*atten,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.24);
   const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.setValueAtTime(400,t);
-  o.connect(hp); hp.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.24);
+  o.connect(hp); hp.connect(g); g.connect(masterGain); o.start(t); o.stop(t+0.24);
   const len=0.18, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
   for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.3));
   const src=audioCtx.createBufferSource(); src.buffer=buf;
   const ng=audioCtx.createGain(); ng.gain.setValueAtTime(0.11*atten,t); ng.gain.exponentialRampToValueAtTime(0.001,t+len);
   const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(3200,t); bp.Q.setValueAtTime(0.8,t);
-  src.connect(bp); bp.connect(ng); ng.connect(audioCtx.destination);
+  src.connect(bp); bp.connect(ng); ng.connect(masterGain);
   src.start(t); src.stop(t+len);
   [2600,3300,4100].forEach((f,i)=>{
     const d2=0.02+i*0.03;
     const o2=audioCtx.createOscillator(); o2.type='sine'; o2.frequency.setValueAtTime(f,t+d2);
     const g2=audioCtx.createGain(); g2.gain.setValueAtTime(0.0001,t+d2);
     g2.gain.exponentialRampToValueAtTime(0.05*atten,t+d2+0.008); g2.gain.exponentialRampToValueAtTime(0.001,t+d2+0.09);
-    o2.connect(g2); g2.connect(audioCtx.destination); o2.start(t+d2); o2.stop(t+d2+0.1);
+    o2.connect(g2); g2.connect(masterGain); o2.start(t+d2); o2.stop(t+d2+0.1);
   });
 }
 function scatterChestLoot(b){
