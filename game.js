@@ -4452,8 +4452,13 @@ function drawGameTitle(cx, y, size, maxW, text, palette){
 // de 1280 mesmo numa tela bem maior — texto e cards ficam minúsculos perdidos no
 // meio da tela, que era exatamente o bug: o teto em 1 nunca deixava passar de lá).
 function uiScale(){
+  // Abaixo de 1280 de largura, o teto de 1 sozinho não bastava: o menu inteiro
+  // (título + card + botão PLAY) precisa de ~620px de altura em S=1, e várias
+  // resoluções comuns de desktop (800x600, 1024x600, janelas maximizadas em
+  // notebooks baixos) têm menos altura que isso — o botão PLAY ficava cortado
+  // embaixo. VH/640 trava a escala pela altura disponível também.
   return VW < 1280
-    ? Math.max(0.68, Math.min(1, VW/480))
+    ? Math.max(0.6, Math.min(1, VW/480, VH/640))
     : Math.min(1.55, Math.min(VW/1280, VH/800));
 }
 function drawMenu(dt){
