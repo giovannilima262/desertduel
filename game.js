@@ -4461,6 +4461,64 @@ function uiScale(){
     ? Math.max(0.6, Math.min(1, VW/480, VH/640))
     : Math.min(1.55, Math.min(VW/1280, VH/800));
 }
+// ── "Tecla" desenhada (WASD, [2]) — quadradinho com gradiente + letra bitmap no meio ──
+function drawKeycap(x, y, size, label){
+  const r = 4*(size/22);
+  roundRect(x, y, size, size, r);
+  const g = ctx.createLinearGradient(0,y,0,y+size);
+  g.addColorStop(0, '#5c4a82'); g.addColorStop(1, '#3a2a5c');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1.4; ctx.stroke();
+  drawBmpText(label, x+size/2, y+size/2+1, size*0.6, {color:'#fff', align:'center'});
+}
+// ── Ícone de mouse: corpo arredondado + divisor + botão esquerdo destacado (clique) ──
+function drawMouseIcon(x, y, size){
+  const w = size*0.72, h = size, rx = x+(size-w)/2;
+  roundRect(rx, y, w, h, w*0.4);
+  const g = ctx.createLinearGradient(0,y,0,y+h);
+  g.addColorStop(0, '#5c4a82'); g.addColorStop(1, '#3a2a5c');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1.4; ctx.stroke();
+  ctx.save();
+  roundRect(rx, y, w/2, h*0.46, w*0.4); ctx.clip();
+  ctx.fillStyle = 'rgba(244,201,93,.6)'; ctx.fillRect(rx, y, w/2, h*0.46);
+  ctx.restore();
+  ctx.beginPath(); ctx.moveTo(rx+w/2, y+3); ctx.lineTo(rx+w/2, y+h*0.46);
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.stroke();
+}
+// ── Legenda de controles do menu — some em telas estreitas (onde teclado/mouse
+// não fazem muito sentido de qualquer forma) pra nunca disputar espaço com o
+// botão PLAY, que já é o elemento mais apertado verticalmente (ver uiScale()).
+function drawControlsHint(S){
+  if(VW < 700) return;
+  const keySize=22*S, iconGap=4*S, rowGap=10*S, padX=14*S, padY=12*S, labelSize=13*S, labelGap=12*S;
+  const rows = [
+    { icons:['W','A','S','D'], label:'MOVE' },
+    { icons:['mouse'],         label:'AIM & SHOOT' },
+    { icons:['2'],             label:'HEAL' },
+  ];
+  let maxRowW = 0;
+  for(const r of rows){
+    const iconsW = r.icons.length*keySize + (r.icons.length-1)*iconGap;
+    maxRowW = Math.max(maxRowW, iconsW + labelGap + bmpTextW(r.label, labelSize));
+  }
+  const rowH = keySize;
+  const panelW = maxRowW + padX*2;
+  const panelH = rows.length*rowH + (rows.length-1)*rowGap + padY*2;
+  const panelX = 18*S, panelY = VH - panelH - 18*S;
+  drawMenuPanel(panelX, panelY, panelW, panelH, 10*S, '#3a2a5c', '#201430');
+  let ry = panelY + padY;
+  for(const row of rows){
+    let ix = panelX + padX;
+    for(const icon of row.icons){
+      if(icon==='mouse') drawMouseIcon(ix, ry, keySize);
+      else drawKeycap(ix, ry, keySize, icon);
+      ix += keySize + iconGap;
+    }
+    drawBmpText(row.label, ix + labelGap - iconGap, ry+rowH/2+1, labelSize, {color:'#e8ddf5', align:'left'});
+    ry += rowH + rowGap;
+  }
+}
 function drawMenu(dt){
   ctx.setTransform(1,0,0,1,0,0);
   // ── Fundo: ilustração do deserto (assets/background.png), sempre "cover" —
@@ -4631,6 +4689,12 @@ function drawMenu(dt){
   });
   drawButtonLabel('PLAY', cx, pbY+pbH/2+1, 26*S, '#fff8e8');
   menuHit.play = {x:pbX, y:pbY, w:pbW, h:pbH};
+
+  // ── Legenda de controles (canto inferior esquerdo) — fica FORA da pilha vertical
+  // principal (título/card/botão) de propósito: ela já quase estourava a altura da
+  // tela em janelas curtas (ver uiScale()), então mais um elemento ali reintroduziria
+  // o mesmo corte. Ancorada no canto, com a própria posição, nunca disputa espaço.
+  drawControlsHint(S);
 
   // ── Transição íris fase 1 (fechando por cima do menu) — quando termina, dispara
   // o start() de verdade, que já deixa preparada a fase 2 (abrindo, ver draw()). ──
