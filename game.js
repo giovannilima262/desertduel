@@ -444,7 +444,7 @@ function drawCoinPopsWorld(){
 function coinCollectSound(atten=1){
   // "Clink" metálico curto e brilhante — toca quando a moedinha chega e conta pro total
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   [[1760,0],[2350,0.03]].forEach(([f,d])=>{
     const o=audioCtx.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(f,t+d);
@@ -878,6 +878,34 @@ function step(dt){
 
 // Synth gunshot sound — layered for a punchy pixel-art feel (Web Audio, no files)
 let audioCtx=null;
+// Alguns navegadores (Safari/iOS em especial) criam o AudioContext já "suspended"
+// mesmo dentro do gesto de clique — sem isso o som simplesmente não toca, sem erro
+// nenhum no console. resume() é seguro de chamar sempre (no-op se já tiver rodando).
+function ensureAudio(){
+  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if(audioCtx.state==='suspended') audioCtx.resume();
+  return audioCtx;
+}
+addEventListener('pointerdown', ensureAudio);
+addEventListener('keydown', ensureAudio);
+// Clique de UI (menu/tela de morte) — "tap" seco e curto, com um segundo tom mais
+// grave pro hover/nav (setas de personagem) pra diferenciar de uma ação "forte" (comprar/jogar).
+function uiClickSound(kind='tap'){
+  const audioCtx = ensureAudio();
+  const t=audioCtx.currentTime;
+  const profiles = {
+    tap:  [[880,0.05]],           // navegação (setas, seleção) — clique neutro
+    confirm: [[660,0.07],[990,0.09]],  // ação positiva (comprar, play, revive) — dois tons subindo
+    back: [[520,0.06]],            // ação neutra/secundária (fechar, cancelar)
+  };
+  const notes = profiles[kind] || profiles.tap;
+  notes.forEach(([f,vol])=>{
+    const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t);
+    const g=audioCtx.createGain(); g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.008); g.gain.exponentialRampToValueAtTime(0.0001,t+0.09);
+    o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.1);
+  });
+}
 // Alcance de audição de tiro alheio (~50 "metros" = 50 tiles) e o quanto mais abafado
 // um tiro de outro personagem soa em relação ao seu próprio (sempre no volume cheio).
 const AUDIO_HEARING_RANGE = MTILE*30;
@@ -893,7 +921,7 @@ function gunSound(s, atten=1){
   // s = perfil da arma: {vol, body, f1, f2, sub} — cada arma soa diferente
   // atten = fator de volume (0..1) — 1 pro seu próprio tiro, menor (por distância) pros outros
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const vol=s.vol*atten, sub=s.sub*atten;
   // ── Sharp attack click (firing pin) ──
@@ -918,7 +946,7 @@ function gunSound(s, atten=1){
   osc.start(t); osc.stop(t+0.05);
 }
 function footstepSound(){
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const len=0.03, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
@@ -931,7 +959,7 @@ function footstepSound(){
 }
 function pickupSound(atten=1){
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   // Click metálico (armar)
   const clk=audioCtx.createOscillator(); clk.type='square'; clk.frequency.setValueAtTime(800,t); clk.frequency.exponentialRampToValueAtTime(200,t+0.04);
@@ -951,7 +979,7 @@ function pickupSound(atten=1){
 function chestSound(atten=1){
   // chime subindo + pop — sinal de loot
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   [[520,0],[780,0.07],[1040,0.14]].forEach(([f,d])=>{
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
@@ -962,7 +990,7 @@ function chestSound(atten=1){
 }
 function overheatSound(){
   // "PSSSHHH" de vapor pressurizado + tom descendo (arma desligando)
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const len=0.55, sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1,Math.max(1,sr*len|0),sr);
   const d=buf.getChannelData(0);
@@ -990,7 +1018,7 @@ function critterSquishSound(atten=1){
 function enemyHitSound(atten=1){
   // thud curto e grave — bala acertou carne
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='square';
   o.frequency.setValueAtTime(340,t); o.frequency.exponentialRampToValueAtTime(120,t+0.07);
@@ -1000,7 +1028,7 @@ function enemyHitSound(atten=1){
 function enemyDieSound(atten=1){
   // tom descendo (desinflando) + ruído de baque + thump grave (peso extra no impacto)
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='triangle';
   o.frequency.setValueAtTime(520,t); o.frequency.exponentialRampToValueAtTime(60,t+0.28);
@@ -1022,7 +1050,7 @@ function enemyDieSound(atten=1){
 }
 function killCollectSound(){
   // "Ding" de abate confirmado: arpejo curto e brilhante + brilho agudo — toca quando a caveira chega no contador
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   [[880,0],[1180,0.045],[1568,0.09]].forEach(([f,d])=>{
     const o=audioCtx.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(f,t+d);
@@ -1039,7 +1067,7 @@ function killCollectSound(){
 function enemyShieldBreakSound(atten=1){
   // Escudo quebrando: zap elétrico descendo + estouro de vidro + tinidos agudos dos cacos
   if(atten<=0) return;
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  ensureAudio();
   const t=audioCtx.currentTime;
   const o=audioCtx.createOscillator(); o.type='sawtooth';
   o.frequency.setValueAtTime(1400,t); o.frequency.exponentialRampToValueAtTime(180,t+0.22);
@@ -4683,8 +4711,9 @@ canvas.addEventListener('click', e=>{
   const x=(e.clientX-r.left)*(canvas.width/r.width), y=(e.clientY-r.top)*(canvas.height/r.height);
   const hit = rc => rc && x>=rc.x && x<=rc.x+rc.w && y>=rc.y && y<=rc.y+rc.h;
   if(state==='dead' || state==='won'){
-    if(hit(endHit.revive)){ revivePlayer(); return; }
+    if(hit(endHit.revive)){ uiClickSound('confirm'); revivePlayer(); return; }
     if(hit(endHit.newgame)){
+      uiClickSound('confirm');
       const maxR = Math.hypot(Math.max(x, VW-x), Math.max(y, VH-y));
       deathWipe = { x, y, t:0, dur:0.32, maxR };
       return;
@@ -4692,19 +4721,23 @@ canvas.addEventListener('click', e=>{
     return;
   }
   if(state!=='menu') return;
-  if(hit(menuHit.prev)){ browseIdx=(browseIdx-1+CHARACTERS.length)%CHARACTERS.length; return; }
-  if(hit(menuHit.next)){ browseIdx=(browseIdx+1)%CHARACTERS.length; return; }
+  if(hit(menuHit.prev)){ uiClickSound('tap'); browseIdx=(browseIdx-1+CHARACTERS.length)%CHARACTERS.length; return; }
+  if(hit(menuHit.next)){ uiClickSound('tap'); browseIdx=(browseIdx+1)%CHARACTERS.length; return; }
   if(hit(menuHit.play)){
+    uiClickSound('confirm');
     const maxR = Math.hypot(Math.max(x,VW-x), Math.max(y,VH-y));
     jogarWipe = { x, y, t:0, dur:0.32, maxR };
     return;
   }
   if(hit(menuHit.action)){
     const ch = CHARACTERS[browseIdx];
-    if(menuHit.action.kind==='select'){ saveData.selected = browseIdx; persistSaveData(); }
+    if(menuHit.action.kind==='select'){ uiClickSound('tap'); saveData.selected = browseIdx; persistSaveData(); }
     else if(menuHit.action.kind==='buy' && saveData.bank >= ch.price){
+      uiClickSound('confirm');
       saveData.bank -= ch.price; saveData.owned.push(browseIdx); saveData.selected = browseIdx;
       persistSaveData(); menuPulseT = 0;
+    } else if(menuHit.action.kind==='buy'){
+      uiClickSound('back');   // sem moeda suficiente — som "negado", mais seco
     }
   }
 });
