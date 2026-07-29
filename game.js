@@ -906,7 +906,7 @@ function ensureAudio(){
     audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     masterGain=audioCtx.createGain();
     masterGain.gain.value = sdkMuted ? 0 : 1;
-    masterGain.connect(masterGain);
+    masterGain.connect(audioCtx.destination);
   }
   if(audioCtx.state==='suspended') audioCtx.resume();
   return audioCtx;
