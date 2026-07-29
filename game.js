@@ -51,6 +51,22 @@ const CHARACTERS = [
   { sheet:'players', row:3, name:'Fugitive Rabbit', price:900 },
   { sheet:'enemies',  row:3, name:'Storm Monster',  price:1500 },
 ];
+// ─── CrazyGames SDK bootstrap ───────────────────────────────────────────
+// O namespace real é window.CrazyGames.SDK (não existe um global "SDK" solto),
+// e ele PRECISA de init() explícito antes de qualquer outra chamada — sem isso
+// todo método é inválido. crazySDK resolve pro objeto do SDK quando pronto, ou
+// null se indisponível (fora da CrazyGames, script bloqueado, ad-blocker etc.)
+// — cada callsite testa contra essa promise, então o jogo roda idêntico com ou
+// sem a plataforma.
+const crazySDK = (async () => {
+  try{
+    if(!window.CrazyGames || !window.CrazyGames.SDK) return null;
+    await window.CrazyGames.SDK.init();
+    return window.CrazyGames.SDK;
+  }catch(e){ return null; }
+})();
+function withSDK(fn){ crazySDK.then(sdk=>{ if(sdk){ try{ fn(sdk); }catch(e){} } }); }
+
 const SAVE_KEY = 'dd_save_v1';   // moedas guardadas + skins compradas — sobrevive a partidas/recargas
 function parseSaveData(raw){
   const d = JSON.parse(raw);
@@ -66,22 +82,20 @@ function loadSaveData(){
 let saveData = loadSaveData();
 function persistSaveData(){
   const json = JSON.stringify(saveData);
-  // localStorage — sempre funciona, fallback offline
-  try{ localStorage.setItem(SAVE_KEY, json); }catch(e){}
-  // CrazyGames cloud save — disponível quando o jogo roda na plataforma deles
-  if(typeof SDK !== 'undefined' && SDK.data && SDK.data.setItem){
-    SDK.data.setItem(SAVE_KEY, json).catch(()=>{});
-  }
+  try{ localStorage.setItem(SAVE_KEY, json); }catch(e){}   // sempre funciona, fallback offline
+  withSDK(sdk => sdk.data.setItem(SAVE_KEY, json).catch(()=>{}));  // cloud save (só na plataforma)
 }
-// Tenta carregar da nuvem do CrazyGames — se vier algo mais recente, sobrescreve
-// o que estava no localStorage (ex: jogador trocou de navegador ou dispositivo).
+// Puxa o save da nuvem da CrazyGames antes do boot terminar — se existir, sobrescreve
+// o que veio do localStorage (ex: jogador trocou de navegador/dispositivo). Retorna uma
+// Promise pro boot poder esperar isso resolver antes de desenhar o menu pela 1a vez.
 function syncFromCloud(){
-  if(typeof SDK !== 'undefined' && SDK.data && SDK.data.getItem){
-    SDK.data.getItem(SAVE_KEY).then(v=>{
+  return crazySDK.then(sdk=>{
+    if(!sdk || !sdk.data || !sdk.data.getItem) return;
+    return sdk.data.getItem(SAVE_KEY).then(v=>{
       if(!v) return;
       try{ saveData = parseSaveData(v); }catch(e){}
     }).catch(()=>{});
-  }
+  }).catch(()=>{});
 }
 
 function blitMapMato(t,x,y,rot){
@@ -344,7 +358,7 @@ let coinPops = [];                  // {fx,fy,tx,ty,to,t,delay,dur,give,collecte
 let coinPulseT = 999, coinBurstT = 999;   // pulso/brilho do chip de moedas (mesmo padrão do de abates)
 let matchWon = false;               // só premia a vitória uma vez por partida
 let victoryTimer = -1;               // conta regressiva pós-vitória até congelar a tela
-const COINS_CRITTER = 3, COINS_KILL = 20, COINS_CHEST_NORMAL = 50, COINS_CHEST_GOLD = 100, COINS_WIN = 1000;
+const COINS_CRITTER = 1, COINS_KILL = 10, COINS_CHEST_NORMAL = 10, COINS_CHEST_GOLD = 20, COINS_WIN = 400;
 function addCoins(amount, x, y, to){
   if(amount<=0 || !to) return;
   const n = clamp(Math.round(amount/6), 1, 6);   // várias moedinhas visuais em drops grandes, sem exagerar
@@ -1318,6 +1332,7 @@ function killPlayer(killer){
   playerKiller = killer && killer.st==='alive' ? killer : null;
   spectator = playerKiller;   // foca em quem te matou
   canvas.style.cursor = 'pointer';
+  withSDK(sdk => sdk.game.gameplayStop());
 }
 // Reviver exatamente onde morreu, com a arma de antes — abates/moedas/tempo continuam
 // (é a mesma partida, só que sem passar pelo spawn de novo).
@@ -1333,6 +1348,7 @@ function revivePlayer(){
   spectator = null; playerKiller = null;
   canvas.style.cursor = 'none';
   state = 'playing';
+  withSDK(sdk => sdk.game.gameplayStart());
 }
 // Vitória (último de pé): mesmo painel de estatísticas da tela de morte, mas sem
 // "reviver" (não tem sentido, já ganhou) — e o jogo/mundo congela de vez (ver frame()),
@@ -1347,6 +1363,10 @@ function showVictoryScreen(){
   wonSnapshot.width = canvas.width; wonSnapshot.height = canvas.height;
   wonSnapshot.getContext('2d').drawImage(canvas, 0, 0);
   canvas.style.cursor = 'pointer';
+  withSDK(sdk => sdk.game.gameplayStop());
+  // Confete da própria CrazyGames — celebração da plataforma pra conquistas grandes
+  // (ganhar a partida inteira é bem o caso de uso que o SDK recomenda pra happytime).
+  withSDK(sdk => sdk.game.happytime());
 }
 
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
@@ -1587,14 +1607,19 @@ function spawnCritter(sp){
     vx:0, vy:0, wanderT:0,
   });
 }
-// Solta uma leva nova só se: (a) ainda tem vaga (abaixo do máx vivo DESSE spawner) e
-// (b) é a primeira leva OU já morreu pelo menos um da leva anterior.
+// Solta uma leva nova só se: (a) ainda tem vaga (abaixo do máx vivo DESSE spawner),
+// (b) é a primeira leva OU já morreu pelo menos um da leva anterior, e (c) o spawner
+// ainda está dentro da zona segura — depois que a tempestade engole o ponto, os
+// bichinhos param de nascer ali (não faz sentido dar vida/moeda numa área que já
+// está matando o jogador por dano de zona).
 function updateCritterSpawners(dt){
   for(const sp of critterSpawners){
     sp.timer -= dt;
     if(sp.timer > 0) continue;
     sp.timer = CRITTER_WAVE_CHECK;
     if(sp.everSpawned && !sp.hasKillSinceWave) continue;
+    const spx = sp.c*MTILE+MTILE/2, spy = sp.r*MTILE+MTILE/2;
+    if(!inSafeZone(spx, spy)) continue;
     const aliveNow = critters.reduce((n,cr)=>n+(cr.spawner===sp && cr.st!=='dead' ? 1 : 0), 0);
     const room = sp.maxAlive - aliveNow;
     if(room <= 0) continue;
@@ -2016,25 +2041,30 @@ function findBestLootGoal(e){
   // Nunca manda o bot atrás de loot fora da zona segura atual — senão ele sai puxado
   // pelo SEEK_LOOT logo depois que o AVOID_ZONE acabou de trazer ele pra dentro, e
   // fica entrando/saindo da tempestade em loop pra sempre atrás do mesmo item.
-  const inZone = (x,y) => !zoneCurrent || zoneState==='idle' || zoneCurrent.r<=0 ||
-    Math.hypot(x-zoneCurrent.cx, y-zoneCurrent.cy) <= zoneCurrent.r;
   let best=null, bestD=Infinity;
   for(const it of gunItems){
     if(!it.t) continue;   // slot vazio (pistola descartada num swap — não fica largada)
     if(!isUpgrade(e, it.t)) continue;
     const gx=it.c*MTILE+MTILE/2, gy=it.r*MTILE+MTILE/2;
-    if(!inZone(gx,gy)) continue;
+    if(!inSafeZone(gx,gy)) continue;
     const d=Math.hypot(gx-e.x, gy-e.y);
     if(d<bestD){ bestD=d; best={c:it.c, r:it.r}; }
   }
   for(const b of chests){
     if(b.st!=='closed') continue;
     const bx=b.c*MTILE+MTILE/2, by=b.r*MTILE+MTILE/2;
-    if(!inZone(bx,by)) continue;
+    if(!inSafeZone(bx,by)) continue;
     const d=Math.hypot(bx-e.x, by-e.y);
     if(d<bestD){ bestD=d; best={c:b.c, r:b.r}; }
   }
   return best;
+}
+// Ponto está dentro da zona segura atual? Antes da 1a zona aparecer (idle) ou sem
+// zona definida, tudo conta como "seguro" — usada tanto pela IA (findBestLootGoal)
+// quanto pelos spawners de bichinho (updateCritterSpawners).
+function inSafeZone(x, y){
+  return !zoneCurrent || zoneState==='idle' || zoneCurrent.r<=0 ||
+    Math.hypot(x-zoneCurrent.cx, y-zoneCurrent.cy) <= zoneCurrent.r;
 }
 // Alvo de "vagar" — tenta ficar dentro da zona segura atual (consciência de tempestade)
 // Puxa um ponto de volta pra dentro da zona segura se ele cair fora dela — usado pra
@@ -4792,6 +4822,7 @@ function start(originX, originY){
   const ox = originX ?? VW/2, oy = originY ?? VH/2;
   const maxR = Math.hypot(Math.max(ox, VW-ox), Math.max(oy, VH-oy));
   introWipe = { x:ox, y:oy, t:0, dur:0.6, maxR };
+  withSDK(sdk => sdk.game.gameplayStart());
 }
 
 //======================= DEBUG (verificação) =======================
@@ -4821,6 +4852,7 @@ window.__endState=()=>({ state, reviveUsed, zoneNum, kills, coins });
 window.__menu=()=>({browseIdx, saveData:JSON.parse(JSON.stringify(saveData))});
 
 //======================= BOOT =======================
+withSDK(sdk => sdk.game.loadingStart());
 Promise.all([
   loadImg('tiles','assets/img/tiles_packed.png'),
   loadImg('interface','assets/img/interface_packed.png'),
@@ -4829,11 +4861,9 @@ Promise.all([
   loadImg('weapons','assets/img/weapons_packed.png'),
   loadImg('background','assets/background.png'),
   fetch('map.json?t='+Date.now()).then(r=>r.ok?r.json():null).then(d=>{MAP=d;}).catch(()=>{MAP=null;}),
+  syncFromCloud(),   // espera o save da nuvem chegar antes do 1o frame — sem isso o menu
+                     // podia piscar com o saldo antigo do localStorage por 1 frame.
 ]).then(()=>{
-  // CrazyGames: sync cloud save on boot & signal the SDK we're ready
-  syncFromCloud();
-  if(typeof SDK!=='undefined' && SDK.game && SDK.game.loadingStop){
-    SDK.game.loadingStop();
-  }
+  withSDK(sdk => sdk.game.loadingStop());
   requestAnimationFrame(frame);
 });
