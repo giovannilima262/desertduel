@@ -1314,6 +1314,7 @@ function bulletStep(b, dt){
 }
 // ── Dano no player (bala de bot) — espelha damageEnemy: escudo absorve primeiro ──
 function damagePlayer(dmg, hx, hy, killer){
+  dmg *= PLAYER_DMG_TAKEN_MULT;
   const px = hx ?? player.x, py = (hy ?? player.y-6) - 6;
   let toArmor = 0, toHp = dmg;
   if(player.armor > 0){
@@ -1453,6 +1454,10 @@ function corpseAlpha(e){            // 1 (opaco) até começar a desvanecer, dep
 // Pistola = 2 de dano (baseline) — resto reescalado nas MESMAS proporções (×0.4 em
 // cima da leva anterior, que já tinha as outras com vantagem clara sobre a pistola).
 const GUN_DMG = { pistola:2, magnum:8, uzi:3.6, sniper:40, carabina:4, fuzil:5, smg:3, escopeta:3 };
+// Facilita o jogo em duas pontas: você bate mais forte E aguenta mais apanhar. Bot vs
+// bot (fora dessas duas funções) continua no dano cru, sem esses multiplicadores.
+const PLAYER_DMG_DEALT_MULT = 1.18;   // seu dano sai 18% maior
+const PLAYER_DMG_TAKEN_MULT = 0.78;   // dano que você recebe é 22% menor
 // Tier de qualidade das armas (pra IA decidir "isso é upgrade?") — não é DPS bruto:
 // automáticas de cadência alta são limitadas pelo superaquecimento, e armas de tiro
 // único (sniper) valem mais que a conta crua sugere, então o ranking é curado.
@@ -1514,7 +1519,7 @@ function nextBotName(){
 
 // ── Bicho fraco (spawner configurável no editor): nasce, cresce e fica andando
 // devagar SÓ no próprio nível — nunca usa escada nem ponte. Qualquer bala ou golpe
-const TOTAL_COMBATANTS = 50;     // player + bots
+const TOTAL_COMBATANTS = 30;     // player + bots — era 50, menos gente pra sobreviver = partidas mais longas
 let enemies = [];
 let critterSpawners = [];   // do mapa: {c,r,L,qty,maxAlive} + timer/estado de leva
 let critters = [];          // instâncias vivas: {x,y,L,st,animT,spawner,...}
@@ -1571,8 +1576,8 @@ function spawnEnemies(){
 // mesmos pontos de spawn do mapa (tiles de spawn de verdade, não qualquer canto). O
 // alvo de reforço é sorteado dentro da faixa (não sempre o mesmo número fixo), pra
 // dar uma variação natural de quantos tão vivos em vez de ficar preso num valor só.
-const MIN_ALIVE_ENEMIES = 40;
-const MAX_ALIVE_ENEMIES = 50;
+const MIN_ALIVE_ENEMIES = 16;   // era 40
+const MAX_ALIVE_ENEMIES = 22;   // era 50 — menos reforços mantendo o mapa cheio
 const RESPAWN_ZONE_LIMIT = 8;
 const RESPAWN_CHECK_INTERVAL = 2;
 let respawnCheckTimer = RESPAWN_CHECK_INTERVAL;
@@ -1790,8 +1795,9 @@ function updateKillFeed(dt){
 }
 function damageEnemy(e, dmg, hx, hy, owner){
   e.flashT = 0.12;
-  const px = hx ?? e.x, py = (hy ?? e.y-6) - 6;
   const byPlayer = owner === 'player';
+  if(byPlayer) dmg *= PLAYER_DMG_DEALT_MULT;
+  const px = hx ?? e.x, py = (hy ?? e.y-6) - 6;
   // Som de acerto/morte de OUTRO combatente também abafa com a distância, igual o
   // tiro — senão toda porrada em qualquer canto do mapa (bot vs bot longe de você)
   // chega no seu ouvido no volume cheio.
@@ -1839,14 +1845,14 @@ const AI_MAX_PATHS_PER_FRAME = 2;
 let aiUrgentPathBudget = 0;
 const AI_MAX_URGENT_PATHS_PER_FRAME = 12;
 const AI_PATH_NODE_CAP = 4000;
-const AI_DETECTION_RADIUS = MTILE*14;
+const AI_DETECTION_RADIUS = MTILE*10;   // era 14 — bot só percebe o player mais perto, dá mais chance de se esconder/fugir
 const AI_LOS_CANDIDATES = 8;
 const AI_MEMORY_TIME = 3;
 const AI_FLEE_HP_PCT = 0.30, AI_FLEE_RECOVER_PCT = 0.55;
 const AI_CRITTER_HUNT_PCT = 0.50;     // abaixo desse HP, bicho vira prioridade
 const AI_ENGAGE_STOP_DIST = MTILE*6;
-const AI_BOT_SPEED = SPEED*0.85;   // levemente mais devagar que o player — sensação "de bot"
-const AI_AIM_ERROR = 0.05;         // erro de mira humano (rad), além do spread da própria arma
+const AI_BOT_SPEED = SPEED*0.78;   // era 0.85 — mais devagar que o player, mais fácil de despistar
+const AI_AIM_ERROR = 0.11;         // era 0.05 — bot erra mais tiros, partida dura mais
 // Mira do bot vira suave em vez de "grudada" no waypoint cru: um corredor apertado
 // (escada, quina) pode exigir reverter quase 180° de um waypoint pro próximo, e sem
 // suavização isso vira um giro instantâneo — a "mira frenética pra vários lados" que
@@ -1868,7 +1874,7 @@ function turnToward(cur, target, maxDelta){
   while(result < -Math.PI) result += 2*Math.PI;
   return result;
 }
-const AI_REACT_MIN = 0.12, AI_REACT_MAX = 0.37;   // atraso de reação antes do 1º tiro num alvo novo
+const AI_REACT_MIN = 0.22, AI_REACT_MAX = 0.55;   // era 0.12-0.37 — bot demora mais pra reagir a um alvo novo
 
 function canEnterCell(fromC,fromR,fromL, toC,toR){
   if(toC<0||toR<0||toC>=COLS||toR>=ROWS) return null;
