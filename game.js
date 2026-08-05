@@ -67,6 +67,21 @@ const crazySDK = (async () => {
 })();
 function withSDK(fn){ crazySDK.then(sdk=>{ if(sdk){ try{ fn(sdk); }catch(e){} } }); }
 
+// ─── Poki SDK bootstrap ─────────────────────────────────────────────────
+// Mesmo esquema do crazySDK acima: init() precisa rodar antes de qualquer
+// outra chamada, e pokiSDK resolve pro objeto do SDK quando pronto, ou null
+// se indisponível (fora da Poki, script bloqueado, ad-blocker etc.) — cada
+// callsite testa contra essa promise, então o jogo roda idêntico com ou sem
+// a plataforma (e as duas plataformas convivem sem conflito).
+const pokiSDK = (async () => {
+  try{
+    if(!window.PokiSDK) return null;
+    await window.PokiSDK.init();
+    return window.PokiSDK;
+  }catch(e){ return null; }
+})();
+function withPoki(fn){ pokiSDK.then(sdk=>{ if(sdk){ try{ fn(sdk); }catch(e){} } }); }
+
 const SAVE_KEY = 'dd_save_v1';   // moedas guardadas + skins compradas — sobrevive a partidas/recargas
 function parseSaveData(raw){
   const d = JSON.parse(raw);
@@ -898,6 +913,7 @@ let audioCtx=null;
 // jogo inteiro sem o jogo saber de cada oscillator individualmente (ver applySdkMute).
 let masterGain=null;
 let sdkMuted=false;
+let adMuted=false;   // true enquanto um commercialBreak() da Poki está na tela
 // Alguns navegadores (Safari/iOS em especial) criam o AudioContext já "suspended"
 // mesmo dentro do gesto de clique — sem isso o som simplesmente não toca, sem erro
 // nenhum no console. resume() é seguro de chamar sempre (no-op se já tiver rodando).
@@ -905,7 +921,7 @@ function ensureAudio(){
   if(!audioCtx){
     audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     masterGain=audioCtx.createGain();
-    masterGain.gain.value = sdkMuted ? 0 : 1;
+    masterGain.gain.value = (sdkMuted||adMuted) ? 0 : 1;
     masterGain.connect(audioCtx.destination);
   }
   if(audioCtx.state==='suspended') audioCtx.resume();
@@ -913,7 +929,11 @@ function ensureAudio(){
 }
 function applySdkMute(muted){
   sdkMuted = !!muted;
-  if(masterGain) masterGain.gain.value = sdkMuted ? 0 : 1;
+  if(masterGain) masterGain.gain.value = (sdkMuted||adMuted) ? 0 : 1;
+}
+function applyAdMute(muted){
+  adMuted = !!muted;
+  if(masterGain) masterGain.gain.value = (sdkMuted||adMuted) ? 0 : 1;
 }
 addEventListener('pointerdown', ensureAudio);
 addEventListener('keydown', ensureAudio);
@@ -1358,6 +1378,7 @@ function killPlayer(killer){
   spectator = playerKiller;   // foca em quem te matou
   canvas.style.cursor = 'pointer';
   withSDK(sdk => sdk.game.gameplayStop());
+  withPoki(sdk => sdk.gameplayStop());
 }
 // Reviver exatamente onde morreu, com a arma de antes — abates/moedas/tempo continuam
 // (é a mesma partida, só que sem passar pelo spawn de novo).
@@ -1374,6 +1395,7 @@ function revivePlayer(){
   canvas.style.cursor = 'none';
   state = 'playing';
   withSDK(sdk => sdk.game.gameplayStart());
+  withPoki(sdk => sdk.gameplayStart());
 }
 // Vitória (último de pé): mesmo painel de estatísticas da tela de morte, mas sem
 // "reviver" (não tem sentido, já ganhou) — e o jogo/mundo congela de vez (ver frame()),
@@ -1389,6 +1411,7 @@ function showVictoryScreen(){
   wonSnapshot.getContext('2d').drawImage(canvas, 0, 0);
   canvas.style.cursor = 'pointer';
   withSDK(sdk => sdk.game.gameplayStop());
+  withPoki(sdk => sdk.gameplayStop());
   // Confete da própria CrazyGames — celebração da plataforma pra conquistas grandes
   // (ganhar a partida inteira é bem o caso de uso que o SDK recomenda pra happytime).
   withSDK(sdk => sdk.game.happytime());
@@ -4856,6 +4879,12 @@ canvas.addEventListener('click', e=>{
     uiClickSound('confirm');
     const maxR = Math.hypot(Math.max(x,VW-x), Math.max(y,VH-y));
     jogarWipe = { x, y, t:0, dur:0.32, maxR };
+    // Pausa natural pra Poki mostrar um commercialBreak antes da partida começar
+    // (recomendação oficial: anúncio comercial entre o menu e o início do nível).
+    withPoki(sdk => {
+      applyAdMute(true);
+      sdk.commercialBreak().finally(() => applyAdMute(false));
+    });
     return;
   }
   if(hit(menuHit.action)){
@@ -4922,6 +4951,7 @@ function start(originX, originY){
   const maxR = Math.hypot(Math.max(ox, VW-ox), Math.max(oy, VH-oy));
   introWipe = { x:ox, y:oy, t:0, dur:0.6, maxR };
   withSDK(sdk => sdk.game.gameplayStart());
+  withPoki(sdk => sdk.gameplayStart());
 }
 
 //======================= DEBUG (verificação) =======================
@@ -4964,5 +4994,6 @@ Promise.all([
                      // podia piscar com o saldo antigo do localStorage por 1 frame.
 ]).then(()=>{
   withSDK(sdk => sdk.game.loadingStop());
+  withPoki(sdk => sdk.gameLoadingFinished());
   requestAnimationFrame(frame);
 });
